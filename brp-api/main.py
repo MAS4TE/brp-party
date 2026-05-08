@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 from datetime import datetime, timedelta
@@ -18,6 +19,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 ALLOWED_SERIES: frozenset[str] = frozenset(
     {"eeg", "wholesale", "community", "home"}
 )
@@ -31,6 +34,7 @@ def verify_password(
 ) -> str:
     expected = os.getenv("API_PASSWORD")
     if not expected:
+        logger.error("API_PASSWORD env var is not configured")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="API_PASSWORD env var is not configured.",
@@ -38,11 +42,13 @@ def verify_password(
     if not secrets.compare_digest(
         credentials.password.encode("utf-8"), expected.encode("utf-8")
     ):
+        logger.warning("Invalid credentials for user '%s'", credentials.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials.",
             headers={"WWW-Authenticate": "Basic"},
         )
+    logger.info("Authenticated request for user '%s'", credentials.username)
     return credentials.username
 
 
@@ -110,18 +116,30 @@ def _bad_request(detail: str) -> HTTPException:
 @app.post("/power_request", status_code=status.HTTP_200_OK)
 def power_request(
     payload: TimeseriesPayload,
-    _user: Annotated[str, Depends(verify_password)],
+    user: Annotated[str, Depends(verify_password)],
 ):
     start_time = payload.time_steps[0]
     end_time = payload.time_steps[-1]
+    logger.info(
+        "Received power request from user '%s' with %d time steps (%s to %s)",
+        user,
+        len(payload.time_steps),
+        start_time.isoformat(),
+        end_time.isoformat(),
+    )
     if not _is_quarter_hour_aligned(start_time):
+        logger.warning("Rejected power request: start_time is not quarter-hour aligned")
         raise _bad_request(
             "start_time must be aligned to a quarter-hour (:00, :15, :30, :45)."
         )
     if start_time >= end_time:
+        logger.warning("Rejected power request: start_time is not before end_time")
         raise _bad_request("start_time must be strictly before end_time.")
     now = datetime.now(tz=start_time.tzinfo) if start_time.tzinfo else datetime.now()
     if start_time <= now + timedelta(minutes=15):
+        logger.warning(
+            "Rejected power request: start_time is not far enough in the future"
+        )
         raise _bad_request(
             "start_time must be more than 15 minutes in the future."
         )
@@ -130,15 +148,33 @@ def power_request(
     for ts_name in ["eeg", "wholesale", "community", "home"]:
         series = getattr(payload, ts_name)
         if series is not None and len(series) != n:
+            logger.warning(
+                "Rejected power request: length mismatch for series '%s' (got %d, expected %d)",
+                ts_name,
+                len(series),
+                n,
+            )
             raise _bad_request(
                 f"Length mismatch for series '{ts_name}': "
                 f"got {len(series)}, expected {n}."
             )
 
-
-    series_dict = {ts_name: getattr(payload, ts_name) for ts_name in ["eeg", "wholesale", "community", "home"]}
-    series_dict = {ts_name: series for ts_name, series in series_dict.items() if series is not None}
+    series_dict = {
+        ts_name: getattr(payload, ts_name)
+        for ts_name in ["eeg", "wholesale", "community", "home"]
+    }
+    series_dict = {
+        ts_name: series
+        for ts_name, series in series_dict.items()
+        if series is not None
+    }
     df = pd.DataFrame(series_dict, index=payload.time_steps)
     df["aggregated"] = df.sum(axis=1)
+    logger.info(
+        "Aggregated %d series for user '%s': %s",
+        len(series_dict),
+        user,
+        ", ".join(series_dict),
+    )
 
     return df[["aggregated"]].to_json(orient="records")
