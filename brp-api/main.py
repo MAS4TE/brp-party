@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: MAS4TE Developers
+#
+# SPDX-License-Identifier: MIT
+
 """FastAPI-Endpoint zum Aggregieren von 1–4 Timeseries und Publish via MQTT."""
 
 from __future__ import annotations
@@ -9,9 +13,14 @@ from datetime import datetime, timedelta
 from typing import Annotated
 
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ValidationInfo, field_validator
+
+
+import json
+
+import paho.mqtt.publish as mqtt_publish
 
 # from mqtt_publisher import MQTTConfig, publish as mqtt_publish_payload
 
@@ -21,30 +30,64 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_SERIES: frozenset[str] = frozenset(
-    {"eeg", "wholesale", "community", "home"}
-)
+ALLOWED_SERIES = {"eeg", "wholesale", "community", "home"}
+
+API_PASSWORD = os.getenv("API_PASSWORD")
+
+MQTT_HOST = os.getenv("MQTT_HOST")
+MQTT_PORT = int(os.getenv("MQTT_PORT"))
+MQTT_USER = os.getenv("MQTT_USER")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
+MQTT_TOPIC = os.getenv("MQTT_TOPIC")
+
 
 app = FastAPI(
     title="brp-schedule-api",
-    version="0.1.1",
+    version="0.1.2",
 )
 security = HTTPBasic()
+
+
+def publish_mqtt_message(
+    payload: dict[str],
+    host: str = "ese-mqtt.ice.kfa-juelich.de",
+    port: int = 8883,
+    topic: str = "mas4te/battery-storage/power_request",
+    username: str | None = None,
+    password: str | None = None,
+) -> str:
+    """Serialize ``payload`` as JSON and publish it with QoS 1.
+
+    Raises:
+        paho.mqtt.exceptions.MQTTException: If publishing fails.
+
+    Returns:
+        The topic used for publishing.
+    """
+    auth = {"username": username, "password": password or ""}
+
+    mqtt_publish.single(
+        topic=topic,
+        payload=json.dumps(payload),
+        qos=1,
+        hostname=host,
+        port=port,
+        auth=auth,
+        tls={},
+    )
 
 
 def verify_password(
     credentials: Annotated[HTTPBasicCredentials, Depends(security)],
 ) -> str:
-    expected = os.getenv("API_PASSWORD")
-
-    if not expected:
+    if not API_PASSWORD:
         logger.error("API_PASSWORD env var is not configured")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="API_PASSWORD env var is not configured.",
         )
     if not secrets.compare_digest(
-        credentials.password.encode("utf-8"), expected.encode("utf-8")
+        credentials.password.encode("utf-8"), API_PASSWORD.encode("utf-8")
     ):
         logger.warning("Invalid credentials for user '%s'", credentials.username)
         raise HTTPException(
@@ -86,9 +129,7 @@ class TimeseriesPayload(BaseModel):
             try:
                 datetime.fromisoformat(ts)
             except ValueError:
-                raise ValueError(
-                    "time_steps must be a list of datetimes."
-                )
+                raise ValueError("time_steps must be a list of datetimes.")
         return value
 
     @field_validator("eeg", "wholesale", "community", "home", mode="before")
@@ -135,21 +176,23 @@ def power_request(
 
     if is_real_world_test:
         if not _is_quarter_hour_aligned(start_time):
-            logger.warning("Rejected power request: start_time is not quarter-hour aligned")
+            logger.warning(
+                "Rejected power request: start_time is not quarter-hour aligned"
+            )
             raise _bad_request(
                 "start_time must be aligned to a quarter-hour (:00, :15, :30, :45)."
             )
         if len(payload.time_steps) > 1 and start_time >= end_time:
             logger.warning("Rejected power request: start_time is not before end_time")
             raise _bad_request("start_time must be strictly before end_time.")
-        now = datetime.now(tz=start_time.tzinfo) if start_time.tzinfo else datetime.now()
+        now = (
+            datetime.now(tz=start_time.tzinfo) if start_time.tzinfo else datetime.now()
+        )
         if start_time <= now + timedelta(minutes=15):
             logger.warning(
                 "Rejected power request: start_time is not far enough in the future"
             )
-            raise _bad_request(
-                "start_time must be more than 15 minutes in the future."
-            )
+            raise _bad_request("start_time must be more than 15 minutes in the future.")
 
     n = len(payload.time_steps)
     for ts_name in ["eeg", "wholesale", "community", "home"]:
@@ -171,9 +214,7 @@ def power_request(
         for ts_name in ["eeg", "wholesale", "community", "home"]
     }
     series_dict = {
-        ts_name: series
-        for ts_name, series in series_dict.items()
-        if series is not None
+        ts_name: series for ts_name, series in series_dict.items() if series is not None
     }
     df = pd.DataFrame(series_dict, index=payload.time_steps)
     df["aggregated"] = df.sum(axis=1)
@@ -184,4 +225,21 @@ def power_request(
         ", ".join(series_dict),
     )
 
-    return df[["aggregated"]].to_json(orient="records")
+    mqtt_timesteps = pd.to_datetime(payload.time_steps).astype(str)
+    mqtt_payload = {
+        ts: val for ts, val in zip(mqtt_timesteps, df["aggregated"].tolist())
+    }
+    try:
+        publish_mqtt_message(
+            payload=mqtt_payload,
+            host=MQTT_HOST,
+            port=MQTT_PORT,
+            topic=MQTT_TOPIC,
+            username=MQTT_USER,
+            password=MQTT_PASSWORD,
+        )
+    except Exception as e:
+        logger.error(f"Could not publish MQTT message: {e}")
+        raise HTTPException(500)
+
+    return Response(status_code=status.HTTP_200_OK)
