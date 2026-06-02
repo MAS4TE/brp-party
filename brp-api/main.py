@@ -11,6 +11,7 @@ import os
 import secrets
 from datetime import datetime, timedelta
 from typing import Annotated
+from uuid import uuid4
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, status, Response
@@ -218,6 +219,7 @@ def power_request(
     }
     df = pd.DataFrame(series_dict, index=payload.time_steps)
     df["aggregated"] = df.sum(axis=1)
+    df["aggregated"] *= 1000  # convert from kW to W
     logger.info(
         "Aggregated %d series for user '%s': %s",
         len(series_dict),
@@ -227,7 +229,9 @@ def power_request(
 
     mqtt_timesteps = pd.to_datetime(payload.time_steps).astype(str)
     mqtt_payload = {
-        ts: val for ts, val in zip(mqtt_timesteps, df["aggregated"].tolist())
+        "request_id": uuid4(),
+        "time_steps": mqtt_timesteps,
+        "power_rate_w": df["aggregated"].tolist(),
     }
     try:
         publish_mqtt_message(
