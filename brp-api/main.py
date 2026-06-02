@@ -228,8 +228,9 @@ def power_request(
     )
 
     mqtt_timesteps = pd.to_datetime(payload.time_steps).astype(str)
+    request_id = str(uuid4())
     mqtt_payload = {
-        "request_id": uuid4(),
+        "request_id": request_id,
         "time_steps": mqtt_timesteps,
         "power_rate_w": df["aggregated"].tolist(),
     }
