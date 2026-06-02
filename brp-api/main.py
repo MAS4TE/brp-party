@@ -227,7 +227,7 @@ def power_request(
         ", ".join(series_dict),
     )
 
-    mqtt_timesteps = pd.to_datetime(payload.time_steps).astype(str)
+    mqtt_timesteps = pd.to_datetime(payload.time_steps).astype(str).tolist()
     request_id = str(uuid4())
     mqtt_payload = {
         "request_id": request_id,
