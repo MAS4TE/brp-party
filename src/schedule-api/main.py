@@ -34,7 +34,7 @@ MQTT_HOST = os.getenv("MQTT_HOST")
 MQTT_PORT = int(os.getenv("MQTT_PORT"))
 MQTT_USER = os.getenv("MQTT_USER")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
-MQTT_TOPIC = os.getenv("MQTT_TOPIC")
+REQUESTING_SCHEDULE_TOPIC = os.getenv("REQUESTING_SCHEDULE_TOPIC")
 
 DB_PATH = os.getenv("DB_PATH")
 
@@ -144,13 +144,19 @@ def power_request(
 
     database_df = pd.DataFrame(mqtt_payload)
 
+    conn = sqlite3.connect(DB_PATH)
     try:
-        conn = sqlite3.connect(DB_PATH)
-
         util.insert_aggregated_power_series(conn, database_df)
+        conn.commit()
+    except Exception as e:
+        logger.error("Could not persist schedule to database: %s", e)
+        conn.rollback()
+        conn.close()
+        raise HTTPException(status_code=500) from e
 
+    try:
         mqtt_publish.single(
-            topic=MQTT_TOPIC,
+            topic=REQUESTING_SCHEDULE_TOPIC,
             payload=json.dumps(mqtt_payload),
             qos=1,
             hostname=MQTT_HOST,
@@ -158,13 +164,14 @@ def power_request(
             auth=auth,
             tls={},
         )
-
-        conn.commit()
-        conn.close()
     except Exception as e:
-        logger.error("Could not publish MQTT message: %s", e)
-        conn.rollback()
-        conn.close()
+        logger.error(
+            "Schedule persisted but MQTT publish failed for request_id=%s: %s",
+            request_id,
+            e,
+        )
         raise HTTPException(status_code=500) from e
+    finally:
+        conn.close()
 
     return Response(status_code=status.HTTP_200_OK)
