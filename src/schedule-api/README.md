@@ -4,43 +4,49 @@ SPDX-FileCopyrightText: MAS4TE Developers
 SPDX-License-Identifier: MIT
 -->
 
-# brp-api
+# schedule-api
 
-Compact FastAPI service that accepts up to four timeseries, validates them,
-sums them element-wise, and publishes the aggregated result to MQTT over TLS.
+Compact FastAPI service under `./src/schedule-api/` that accepts up to four timeseries,
+validates them, sums them element-wise, persists the aggregated result to SQLite, and
+publishes it to MQTT over TLS.
 
 ## Installation
 
+From the repository root:
+
 ```bash
-cd brp-api
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Optional: create a `.env` file in `brp-api/` (loaded via `python-dotenv` if installed).
+Optional: create a `.env` file in the repository root (loaded via `python-dotenv`).
 
 ## Configuration (environment variables)
 
-| Variable         | Required | Purpose                                      |
-| ---------------- | -------- | -------------------------------------------- |
-| `API_PASSWORD`   | yes      | Password for HTTP Basic Auth                 |
-| `MQTT_HOST`      | yes      | MQTT broker hostname                         |
-| `MQTT_PORT`      | yes      | MQTT broker port (TLS)                       |
-| `MQTT_TOPIC`     | yes      | Topic for the aggregated power request       |
-| `MQTT_USER`      | no       | MQTT username                                |
-| `MQTT_PASSWORD`  | no       | MQTT password                                |
+| Variable | Required | Purpose |
+| -------- | -------- | ------- |
+| `API_PASSWORD` | yes | Password for HTTP Basic Auth |
+| `MQTT_HOST` | yes | MQTT broker hostname |
+| `MQTT_PORT` | yes | MQTT broker port (TLS) |
+| `REQUESTING_SCHEDULE_TOPIC` | yes | Topic for the aggregated power request |
+| `MQTT_USER` | no | MQTT username |
+| `MQTT_PASSWORD` | no | MQTT password |
+| `DB_PATH` | yes | SQLite database file (same path as schedule-validation) |
 
 ## Running
+
+From the repository root:
 
 ```bash
 export API_PASSWORD=secret
 export MQTT_HOST=your-broker.example.com
 export MQTT_PORT=8883
-export MQTT_TOPIC=mas4te/battery-storage/power_request
+export REQUESTING_SCHEDULE_TOPIC=mas4te/battery-storage/power_request
 export MQTT_USER=your-user
 export MQTT_PASSWORD=your-password
+export DB_PATH=database.db
 
-uvicorn main:app --reload
+uvicorn --app-dir ./src/schedule-api main:app --reload
 ```
 
 Interactive API docs: `http://localhost:8000/docs`
@@ -83,14 +89,21 @@ At least one series must be present. Each provided series must have the same len
 - If there is more than one step, the first step must be strictly before the last.
 - The first step must be more than 15 minutes in the future (relative to server time, using the request timezone when present).
 
+### SQLite persistence
+
+On success, each timestep is stored as one row in the table `requested_aggregated_schedules`
+in the database at `DB_PATH` (long table: `request_id`, `time_steps`, `power_rate_w`).
+Rows are written before MQTT publish; on publish failure the transaction is rolled back.
+
 ### MQTT payload
 
-On success, the service publishes a JSON object mapping each timestep (string) to the summed value across all provided series:
+On success, the service publishes a JSON object with `request_id`, `time_steps`, and `power_rate_w` (aggregated power in watts):
 
 ```json
 {
-  "2026-05-08 12:00:00": 0.02,
-  "2026-05-08 12:15:00": 0.98
+  "request_id": "…",
+  "time_steps": ["2026-05-08 12:00:00", "2026-05-08 12:15:00"],
+  "power_rate_w": [20.0, 980.0]
 }
 ```
 
@@ -100,9 +113,9 @@ Publishing uses QoS 1 and TLS (`tls={}` in the Paho client).
 
 | Status | When |
 | ------ | ---- |
-| `401`  | Invalid HTTP Basic password |
-| `422`  | Validation failed (body or `is_real_world_test` rules) |
-| `500`  | `API_PASSWORD` not configured, or MQTT publish failed |
+| `401` | Invalid HTTP Basic password |
+| `422` | Validation failed (body or `is_real_world_test` rules) |
+| `500` | `API_PASSWORD` not configured, SQLite persist failed, or MQTT publish failed |
 
 ## Example: build a request with pandas
 
