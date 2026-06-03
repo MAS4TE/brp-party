@@ -9,23 +9,20 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-import sys
 from typing import Annotated
 from uuid import uuid4
 import json
-
-sys.path.append("./../../")
+from contextlib import asynccontextmanager
+import sqlite3
 
 import paho.mqtt.publish as mqtt_publish
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, status, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from util import (
-    SERIES_NAMES,
-    TimeseriesPayload,
-    aggregate_power_series,
-    validate_real_world_test,
-)
+import pandas as pd
+
+import util
+from models import TimeseriesPayload, SERIES_NAMES
 
 load_dotenv()
 
@@ -39,10 +36,21 @@ MQTT_USER = os.getenv("MQTT_USER")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 MQTT_TOPIC = os.getenv("MQTT_TOPIC")
 
+DB_PATH = os.getenv("DB_PATH")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    conn = sqlite3.connect(DB_PATH)
+    util.create_table(conn)
+    conn.close()
+    yield
+
 
 app = FastAPI(
     title="schedule-api",
     version="0.1.2",
+    lifespan=lifespan,
 )
 security = HTTPBasic()
 
@@ -93,13 +101,13 @@ def power_request(
 
     if is_real_world_test:
         try:
-            validate_real_world_test(payload)
+            util.validate_real_world_test(payload)
         except ValueError as exc:
             logger.warning("Rejected power request: %s", exc)
             raise _bad_request(str(exc)) from exc
 
     n = len(payload.time_steps)
-    for ts_name in SERIES_NAMES:
+    for ts_name in util.SERIES_NAMES:
         series = getattr(payload, ts_name)
         if series is not None and len(series) != n:
             logger.warning(
@@ -125,7 +133,7 @@ def power_request(
         ", ".join(series_dict),
     )
 
-    mqtt_timesteps, power_rate_w = aggregate_power_series(payload)
+    mqtt_timesteps, power_rate_w = util.aggregate_power_series(payload)
     request_id = str(uuid4())
     mqtt_payload = {
         "request_id": request_id,
@@ -134,7 +142,13 @@ def power_request(
     }
     auth = {"username": MQTT_USER, "password": MQTT_PASSWORD}
 
+    database_df = pd.DataFrame(mqtt_payload)
+
     try:
+        conn = sqlite3.connect(DB_PATH)
+
+        util.insert_aggregated_power_series(conn, database_df)
+
         mqtt_publish.single(
             topic=MQTT_TOPIC,
             payload=json.dumps(mqtt_payload),
@@ -144,8 +158,13 @@ def power_request(
             auth=auth,
             tls={},
         )
+
+        conn.commit()
+        conn.close()
     except Exception as e:
         logger.error("Could not publish MQTT message: %s", e)
+        conn.rollback()
+        conn.close()
         raise HTTPException(status_code=500) from e
 
     return Response(status_code=status.HTTP_200_OK)
