@@ -50,19 +50,22 @@ def validate_real_world_test(payload: TimeseriesPayload) -> None:
 
 def create_table(conn: sqlite3.Connection) -> None:
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS aggregated_power_series (
+        CREATE TABLE IF NOT EXISTS requested_aggregated_schedules (
             request_id TEXT,
             time_steps TEXT,
             power_rate_w REAL
         )
     """)
+    conn.commit()
 
 
-def insert_aggregated_power_series(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
+def write_requested_aggregated_schedule_to_db(
+    conn: sqlite3.Connection, df: pd.DataFrame
+) -> None:
     cur = conn.cursor()
     cur.executemany(
         """
-        INSERT INTO aggregated_power_series
+        INSERT INTO requested_aggregated_schedules
         (request_id, time_steps, power_rate_w)
         VALUES (?, ?, ?)
         """,
@@ -70,3 +73,4 @@ def insert_aggregated_power_series(conn: sqlite3.Connection, df: pd.DataFrame) -
             index=False, name=None
         ),
     )
+    conn.commit()

@@ -146,8 +146,7 @@ def power_request(
 
     conn = sqlite3.connect(DB_PATH)
     try:
-        util.insert_aggregated_power_series(conn, database_df)
-        conn.commit()
+        util.write_requested_aggregated_schedule_to_db(conn, database_df)
     except Exception as e:
         logger.error("Could not persist schedule to database: %s", e)
         conn.rollback()
