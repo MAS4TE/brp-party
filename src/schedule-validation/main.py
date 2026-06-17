@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MQTT_HOST = os.getenv("MQTT_HOST")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "8883"))
+MQTT_PORT = int(os.getenv("MQTT_PORT"))
 MQTT_USER = os.getenv("MQTT_USER")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 ACTUAL_SCHEDULES_TOPIC = os.getenv("ACTUAL_SCHEDULES_TOPIC")
@@ -61,6 +61,9 @@ def main() -> None:
     util.require_env_vars(
         [
             ("MQTT_HOST", MQTT_HOST),
+            ("MQTT_PORT", MQTT_PORT),
+            ("MQTT_USER", MQTT_USER),
+            ("MQTT_PASSWORD", MQTT_PASSWORD),
             ("ACTUAL_SCHEDULES_TOPIC", ACTUAL_SCHEDULES_TOPIC),
             ("DB_PATH", DB_PATH),
         ]
