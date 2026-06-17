@@ -119,21 +119,6 @@ def power_request(
             logger.warning("Rejected power request: %s", exc)
             raise _bad_request(str(exc)) from exc
 
-    n = len(payload.time_steps)
-    for ts_name in util.SERIES_NAMES:
-        series = getattr(payload, ts_name)
-        if series is not None and len(series) != n:
-            logger.warning(
-                "Rejected power request: length mismatch for series '%s' (got %d, expected %d)",
-                ts_name,
-                len(series),
-                n,
-            )
-            raise _bad_request(
-                f"Length mismatch for series '{ts_name}': "
-                f"got {len(series)}, expected {n}."
-            )
-
     series_dict = {
         ts_name: getattr(payload, ts_name)
         for ts_name in SERIES_NAMES
