@@ -14,6 +14,14 @@ from models import SERIES_NAMES
 from models import TimeseriesPayload
 
 
+def require_env_vars(name_value_pairs: list[tuple[str, str | None]]) -> None:
+    missing = [name for name, value in name_value_pairs if not value]
+    if missing:
+        raise SystemExit(
+            f"Missing required environment variables: {', '.join(missing)}"
+        )
+
+
 def aggregate_power_series(payload: TimeseriesPayload) -> tuple[list[str], list[float]]:
     """Sum provided series per timestep and convert aggregated power from kW to W."""
     series_dict = {

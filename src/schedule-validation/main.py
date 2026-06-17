@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MQTT_HOST = os.getenv("MQTT_HOST")
-MQTT_PORT = int(os.getenv("MQTT_PORT"))
+MQTT_PORT = os.getenv("MQTT_PORT")
 MQTT_USER = os.getenv("MQTT_USER")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 ACTUAL_SCHEDULES_TOPIC = os.getenv("ACTUAL_SCHEDULES_TOPIC")
@@ -68,6 +68,7 @@ def main() -> None:
             ("DB_PATH", DB_PATH),
         ]
     )
+    mqtt_port = int(MQTT_PORT)
 
     conn = sqlite3.connect(DB_PATH)
     util.create_actual_schedules_table(conn)
@@ -89,9 +90,9 @@ def main() -> None:
     logger.info(
         "Connecting to MQTT broker %s:%s",
         MQTT_HOST,
-        MQTT_PORT,
+        mqtt_port,
     )
-    client.connect(MQTT_HOST, MQTT_PORT)
+    client.connect(MQTT_HOST, mqtt_port)
     client.loop_forever()
 
 

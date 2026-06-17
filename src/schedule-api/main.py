@@ -31,12 +31,25 @@ logger = logging.getLogger(__name__)
 API_PASSWORD = os.getenv("API_PASSWORD")
 
 MQTT_HOST = os.getenv("MQTT_HOST")
-MQTT_PORT = int(os.getenv("MQTT_PORT"))
+MQTT_PORT = os.getenv("MQTT_PORT")
 MQTT_USER = os.getenv("MQTT_USER")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 REQUESTING_SCHEDULE_TOPIC = os.getenv("REQUESTING_SCHEDULE_TOPIC")
 
 DB_PATH = os.getenv("DB_PATH")
+
+util.require_env_vars(
+    [
+        ("API_PASSWORD", API_PASSWORD),
+        ("MQTT_HOST", MQTT_HOST),
+        ("MQTT_PORT", MQTT_PORT),
+        ("MQTT_USER", MQTT_USER),
+        ("MQTT_PASSWORD", MQTT_PASSWORD),
+        ("REQUESTING_SCHEDULE_TOPIC", REQUESTING_SCHEDULE_TOPIC),
+        ("DB_PATH", DB_PATH),
+    ]
+)
+MQTT_PORT = int(MQTT_PORT)
 
 
 @asynccontextmanager
