@@ -100,7 +100,7 @@ def write_actual_schedule_to_db(
     cur = conn.cursor()
     cur.executemany(
         """
-        INSERT INTO actual_schedule
+        INSERT INTO actual_schedules
         (request_id, time_steps, power_rate_w)
         VALUES (?, ?, ?)
         """,
