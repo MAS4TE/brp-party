@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 
 import pandas as pd
 from pydantic import BaseModel, ValidationError, ValidationInfo, field_validator
@@ -95,18 +96,33 @@ def create_actual_schedules_table(conn: sqlite3.Connection) -> None:
 
 
 def write_actual_schedule_to_db(
-    conn: sqlite3.Connection, actual_schedule: pd.DataFrame
-):
+    conn: sqlite3.Connection,
+    actual_schedule: pd.DataFrame,
+    valid: bool,
+    errors: list[str],
+) -> None:
+    received_at = datetime.now(timezone.utc).isoformat()
+    validation_errors = json.dumps(errors)
     cur = conn.cursor()
     cur.executemany(
         """
         INSERT INTO actual_schedules
-        (request_id, time_steps, power_rate_w)
-        VALUES (?, ?, ?)
+        (request_id, time_steps, power_rate_w, received_at, valid, validation_errors)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        actual_schedule[["request_id", "time_steps", "power_rate_w"]].itertuples(
-            index=False, name=None
-        ),
+        [
+            (
+                request_id,
+                time_steps,
+                power_rate_w,
+                received_at,
+                int(valid),
+                validation_errors,
+            )
+            for request_id, time_steps, power_rate_w in actual_schedule[
+                ["request_id", "time_steps", "power_rate_w"]
+            ].itertuples(index=False, name=None)
+        ],
     )
     conn.commit()
 
@@ -187,39 +203,34 @@ def process_actual_schedule(conn: sqlite3.Connection, raw_payload: bytes) -> dic
             "errors": ["Internal validation error."],
         }
 
-    # validate timesteps of actual schedule against requested schedule
-    if (
+    # check for a matching original schedule before comparing time_steps, since an
+    # empty requested_schedule would otherwise always look like a time_steps mismatch
+    errors: list[str] = []
+    if requested_schedule.empty:
+        errors.append(f"No original schedule found for request_id {request_id!r}.")
+    elif (
         actual_schedule["time_steps"].tolist()
         != requested_schedule["time_steps"].tolist()
     ):
-        errors = [
+        errors.append(
             f"time_steps mismatch: expected {requested_schedule['time_steps'].tolist()}, "
             f"got {actual_schedule['time_steps'].tolist()}."
-        ]
-        return {
-            "request_id": request_id,
-            "valid": False,
-            "errors": errors,
-        }
+        )
+
+    missing_discharge_energy = None
+    if not errors:
+        try:
+            missing_discharge_energy = calc_schedule_differences(
+                actual_schedule, requested_schedule
+            )
+        except Exception:
+            logger.exception("Failed to calculate schedule differences")
+            errors.append("Internal validation error.")
 
     try:
-        if requested_schedule.empty:
-            errors = [f"No original schedule found for request_id {request_id!r}."]
-            return {
-                "request_id": request_id,
-                "valid": False,
-                "errors": errors,
-            }
-    except Exception:
-        logger.exception("Failed to compare actual schedule with original")
-        return {
-            "request_id": request_id,
-            "valid": False,
-            "errors": ["Internal validation error."],
-        }
-
-    try:
-        write_actual_schedule_to_db(conn, actual_schedule)
+        write_actual_schedule_to_db(
+            conn, actual_schedule, valid=not errors, errors=errors
+        )
     except Exception:
         logger.exception("Failed to save actual schedule to database")
         return {
@@ -228,17 +239,8 @@ def process_actual_schedule(conn: sqlite3.Connection, raw_payload: bytes) -> dic
             "errors": ["Internal validation error."],
         }
 
-    try:
-        missing_discharge_energy = calc_schedule_differences(
-            actual_schedule, requested_schedule
-        )
-    except Exception:
-        logger.exception("Failed to calculate schedule differences")
-        return {
-            "request_id": request_id,
-            "valid": False,
-            "errors": ["Internal validation error."],
-        }
+    if errors:
+        return {"request_id": request_id, "valid": False, "errors": errors}
 
     return {
         "request_id": request_id,
