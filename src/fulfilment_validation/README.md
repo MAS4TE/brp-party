@@ -4,10 +4,10 @@ SPDX-FileCopyrightText: MAS4TE Developers
 SPDX-License-Identifier: MIT
 -->
 
-# schedule-validation
+# fulfilment_validation
 
-Long-running MQTT service under `./src/schedule-validation/` that validates fulfillment
-schedules against the originals stored by [schedule-api](../schedule-api/).
+Long-running MQTT service under `./src/fulfilment_validation/` that validates fulfillment
+schedules against the originals stored by [power_request_api](../power_request_api/).
 
 ## Flow
 
@@ -27,7 +27,7 @@ schedules against the originals stored by [schedule-api](../schedule-api/).
 | `ACTUAL_SCHEDULES_TOPIC` | yes | Topic for incoming schedules and validation responses |
 | `MQTT_USER` | no | MQTT username |
 | `MQTT_PASSWORD` | no | MQTT password |
-| `DB_PATH` | yes | SQLite database (same file as schedule-api) |
+| `DB_PATH` | yes | SQLite database (same file as power_request_api) |
 
 Optional: create a `.env` file in the repository root (loaded via `python-dotenv`).
 
@@ -43,14 +43,14 @@ export MQTT_USER=your-user
 export MQTT_PASSWORD=your-password
 export DB_PATH=database.db
 
-python ./src/schedule-validation/main.py
+python ./src/fulfilment_validation/main.py
 ```
 
 ## Payload formats
 
 ### Incoming (actual schedules topic)
 
-Same shape as the schedule-api MQTT payload:
+Same shape as the power_request_api MQTT payload:
 
 ```json
 {
@@ -93,7 +93,7 @@ On success:
 
 ## Database
 
-Reads from `requested_aggregated_schedules` (written by schedule-api).
+Reads from `requested_aggregated_schedules` (written by power_request_api).
 
 On startup, creates `actual_schedules` if missing (columns: `request_id`, `time_steps`,
 `power_rate_w`, `received_at`, `valid`, `validation_errors`).

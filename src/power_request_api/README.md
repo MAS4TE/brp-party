@@ -4,9 +4,9 @@ SPDX-FileCopyrightText: MAS4TE Developers
 SPDX-License-Identifier: MIT
 -->
 
-# schedule-api
+# power_request_api
 
-Compact FastAPI service under `./src/schedule-api/` that accepts up to four timeseries,
+Compact FastAPI service under `./src/power_request_api/` that accepts up to four timeseries,
 validates them, sums them element-wise, persists the aggregated result to SQLite, and
 publishes it to MQTT over TLS.
 
@@ -31,7 +31,7 @@ Optional: create a `.env` file in the repository root (loaded via `python-dotenv
 | `REQUESTING_SCHEDULE_TOPIC` | yes | Topic for the aggregated power request |
 | `MQTT_USER` | no | MQTT username |
 | `MQTT_PASSWORD` | no | MQTT password |
-| `DB_PATH` | yes | SQLite database file (same path as schedule-validation) |
+| `DB_PATH` | yes | SQLite database file (same path as fulfilment_validation) |
 
 ## Running
 
@@ -46,7 +46,7 @@ export MQTT_USER=your-user
 export MQTT_PASSWORD=your-password
 export DB_PATH=database.db
 
-uvicorn --app-dir ./src/schedule-api main:app --reload
+uvicorn --app-dir ./src/power_request_api main:app --reload
 ```
 
 Interactive API docs: `http://localhost:8000/docs`

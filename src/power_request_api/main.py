@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="schedule-api",
+    title="power_request_api",
     version="0.1.2",
     lifespan=lifespan,
 )
