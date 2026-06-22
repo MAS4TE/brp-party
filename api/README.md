@@ -4,11 +4,14 @@ SPDX-FileCopyrightText: MAS4TE Developers
 SPDX-License-Identifier: MIT
 -->
 
-# power_request_api
+# api
 
-Compact FastAPI service under `./src/power_request_api/` that accepts up to four timeseries,
-validates them, sums them element-wise, persists the aggregated result to SQLite, and
-publishes it to MQTT over TLS.
+FastAPI service under `./api/` with two endpoints:
+
+- `POST /power_request` — accepts up to four timeseries, validates them, sums them
+  element-wise, persists the aggregated result to SQLite, and publishes it to MQTT over TLS.
+- `POST /actual_schedule` — accepts the schedule actually driven by the fulfiller,
+  validates it against the stored request, persists it, and returns the validation result.
 
 ## Installation
 
@@ -31,7 +34,7 @@ Optional: create a `.env` file in the repository root (loaded via `python-dotenv
 | `REQUESTING_SCHEDULE_TOPIC` | yes | Topic for the aggregated power request |
 | `MQTT_USER` | no | MQTT username |
 | `MQTT_PASSWORD` | no | MQTT password |
-| `DB_PATH` | yes | SQLite database file (same path as fulfilment_validation) |
+| `DB_PATH` | yes | SQLite database file |
 
 ## Running
 
@@ -46,14 +49,12 @@ export MQTT_USER=your-user
 export MQTT_PASSWORD=your-password
 export DB_PATH=database.db
 
-uvicorn --app-dir ./src/power_request_api main:app --reload
+uvicorn --app-dir ./api main:app --reload
 ```
 
 Interactive API docs: `http://localhost:8000/docs`
 
-## Endpoint
-
-`POST /power_request`
+## Endpoint: `POST /power_request`
 
 - **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
 - **Body:** 1–4 optional series (`eeg`, `wholesale`, `community`, `home`) plus `time_steps`.
@@ -167,4 +168,81 @@ curl -u brp:secret \
   -X POST "http://localhost:8000/power_request?is_real_world_test=true" \
   -H "Content-Type: application/json" \
   -d @payload.json
+```
+
+## Endpoint: `POST /actual_schedule`
+
+Reported by the fulfiller after driving a schedule. The service validates the actually
+driven schedule against the original request (matched by `request_id`), stores it, and
+returns the validation result synchronously.
+
+- **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
+- **Body:** `request_id`, `time_steps`, and `power_rate_w` (equal lengths).
+- **Response:** `200 OK` with the validation result as JSON.
+
+### Request body schema
+
+```json
+{
+  "request_id": "200312c0-cb21-479d-82ec-037077f0bc44",
+  "time_steps": ["2026-05-08 12:00:00", "2026-05-08 12:15:00"],
+  "power_rate_w": [20.0, 980.0]
+}
+```
+
+`request_id` must match a schedule previously stored by `POST /power_request`, and
+`time_steps` must equal the stored ones.
+
+### Response
+
+On success:
+
+```json
+{
+  "request_id": "200312c0-cb21-479d-82ec-037077f0bc44",
+  "valid": true,
+  "errors": [],
+  "missing_energy_wh": 0.0
+}
+```
+
+On business-validation failure (unknown `request_id`, `time_steps` mismatch) — still `200 OK`:
+
+```json
+{
+  "request_id": "200312c0-cb21-479d-82ec-037077f0bc44",
+  "valid": false,
+  "errors": ["time_steps mismatch: expected [...], got [...]."]
+}
+```
+
+`missing_energy_wh` is the missing discharge energy (Wh) summed over timesteps where the
+requested power is negative and the actual power is below requested
+(see `calc_schedule_differences` in `util.py`).
+
+### SQLite persistence
+
+Each received timestep is stored as one row in the table `actual_schedules` at `DB_PATH`
+(columns: `request_id`, `time_steps`, `power_rate_w`, `received_at`, `valid`,
+`validation_errors`), regardless of validation outcome.
+
+### Error responses
+
+| Status | When |
+| ------ | ---- |
+| `401` | Invalid HTTP Basic password |
+| `422` | Body does not match the schema (e.g. `power_rate_w`/`time_steps` length mismatch) |
+| `500` | SQLite read/persist failed |
+
+### curl example
+
+```bash
+curl -u bob:secret \
+  -X POST "http://localhost:8000/actual_schedule" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "200312c0-cb21-479d-82ec-037077f0bc44",
+    "time_steps": ["2026-05-08 12:00:00", "2026-05-08 12:15:00"],
+    "power_rate_w": [20.0, 980.0]
+  }'
 ```

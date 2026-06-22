@@ -57,3 +57,24 @@ class TimeseriesPayload(BaseModel):
                 f"got {len(value)}, expected {len(timestamps)}."
             )
         return value
+
+
+class ActualSchedulePayload(BaseModel):
+    """Schedule actually driven by the fulfiller, sent back for validation."""
+
+    request_id: str
+    time_steps: list[str]
+    power_rate_w: list[float]
+
+    @field_validator("power_rate_w")
+    @classmethod
+    def _check_lengths_match(
+        cls, value: list[float], info: ValidationInfo
+    ) -> list[float]:
+        time_steps = info.data.get("time_steps")
+        if time_steps is not None and len(value) != len(time_steps):
+            raise ValueError(
+                f"power_rate_w length ({len(value)}) must match "
+                f"time_steps length ({len(time_steps)})."
+            )
+        return value

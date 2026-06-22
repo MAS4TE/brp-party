@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""FastAPI endpoint to aggregate 1–4 timeseries and publish via MQTT."""
+"""FastAPI service: aggregate 1–4 timeseries and publish via MQTT, and validate
+the fulfiller's actual schedule against the stored request."""
 
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import pandas as pd
 
 import util
-from models import TimeseriesPayload, SERIES_NAMES
+from models import TimeseriesPayload, ActualSchedulePayload, SERIES_NAMES
 
 load_dotenv()
 
@@ -56,14 +57,13 @@ MQTT_PORT = int(MQTT_PORT)
 async def lifespan(app: FastAPI):
     conn = sqlite3.connect(DB_PATH)
     util.create_table(conn)
+    util.create_actual_schedules_table(conn)
     conn.close()
     yield
 
 
 app = FastAPI(
-    title="power_request_api",
-    version="0.1.2",
-    lifespan=lifespan,
+    title="brp-party", version="0.2.0", lifespan=lifespan, root_path="/brp-api/"
 )
 security = HTTPBasic()
 
@@ -172,3 +172,37 @@ def power_request(
         conn.close()
 
     return Response(status_code=status.HTTP_200_OK)
+
+
+@app.post("/actual_schedule", status_code=status.HTTP_200_OK)
+def actual_schedule(
+    payload: ActualSchedulePayload,
+    user: Annotated[str, Depends(verify_password)],
+):
+    logger.info(
+        "Received actual schedule from user '%s' for request_id=%s with %d time steps",
+        user,
+        payload.request_id,
+        len(payload.time_steps),
+    )
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        result = util.validate_actual_schedule(conn, payload)
+    except Exception as e:
+        logger.error(
+            "Failed to validate actual schedule for request_id=%s: %s",
+            payload.request_id,
+            e,
+        )
+        conn.rollback()
+        raise HTTPException(status_code=500) from e
+    finally:
+        conn.close()
+
+    logger.info(
+        "Validated actual schedule for request_id=%s: valid=%s",
+        payload.request_id,
+        result["valid"],
+    )
+    return result
