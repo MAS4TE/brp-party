@@ -93,7 +93,8 @@ At least one series must be present. Each provided series must have the same len
 ### SQLite persistence
 
 On success, each timestep is stored as one row in the table `requested_aggregated_schedules`
-in the database at `DB_PATH` (long table: `request_id`, `time_steps`, `power_rate_w`).
+in the database at `DB_PATH` (long table: `request_id`, `time_steps`, `power_rate_w`,
+`requested_at` — UTC timestamp shared by all rows of the request).
 Rows are written before MQTT publish; on publish failure the transaction is rolled back.
 
 ### MQTT payload
@@ -218,13 +219,19 @@ On business-validation failure (unknown `request_id`, `time_steps` mismatch) —
 
 `missing_energy_wh` is the missing discharge energy (Wh) summed over timesteps where the
 requested power is negative and the actual power is below requested
-(see `calc_schedule_differences` in `util.py`).
+(see `calc_missing_energy_timeseries` in `util.py`).
 
 ### SQLite persistence
 
-Each received timestep is stored as one row in the table `actual_schedules` at `DB_PATH`
-(columns: `request_id`, `time_steps`, `power_rate_w`, `received_at`, `valid`,
-`validation_errors`), regardless of validation outcome.
+What gets stored in the table `actual_schedules` at `DB_PATH` depends on the validation
+outcome:
+
+- **Valid** (`time_steps` match the stored request): one row per timestep, with
+  `time_steps`, `power_rate_w` (actual), and the per-timestep `missing_energy_wh`.
+- **Invalid** (unknown `request_id`, `time_steps` mismatch): a single summary row with
+  `time_steps`/`power_rate_w`/`missing_energy_wh` set to `NULL` and `validation_errors` filled in.
+
+All rows have `request_id`, `received_at` (UTC timestamp of this submission), and `valid`.
 
 ### Error responses
 
