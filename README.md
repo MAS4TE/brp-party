@@ -6,15 +6,24 @@ SPDX-License-Identifier: MIT
 
 # brp-party
 
-Monorepo for BRP schedule handling.
+Single FastAPI service for BRP schedule handling.
 
 ## Layout
 
 ```
-./src/
-  power_request_api/     # HTTP → aggregate → MQTT (entry: main.py)
-  fulfilment_validation/ # MQTT fulfillment validation (entry: main.py)
+./api/        # the service (entry: main.py)
+  main.py     #   HTTP endpoints
+  models.py   #   request/response schemas
+  util.py     #   aggregation, validation, persistence
 ```
+
+## Flow
+
+1. Lina sends a power-request schedule to `POST /power_request`. The service validates
+   and aggregates it, persists it to SQLite, and publishes it to Bob via MQTT.
+2. Bob drives the schedule and reports the actually driven schedule back to
+   `POST /actual_schedule`. The service validates it against the stored request and
+   returns the validation result synchronously (no MQTT round-trip).
 
 ## Setup
 
@@ -23,29 +32,22 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run power_request_api
+Optional: create a `.env` file in the repository root (loaded via `python-dotenv`).
+
+## Run
 
 ```bash
 export API_PASSWORD=secret
 export MQTT_HOST=your-broker.example.com
 export MQTT_PORT=8883
+export MQTT_USER=your-user
+export MQTT_PASSWORD=your-password
 export REQUESTING_SCHEDULE_TOPIC=mas4te/battery-storage/power_request
 export DB_PATH=database.db
 
-uvicorn --app-dir ./src/power_request_api main:app --reload
+uvicorn --app-dir ./api main:app --reload
 ```
 
-See [src/power_request_api/README.md](src/power_request_api/README.md) for API details.
+Interactive API docs: `http://localhost:8000/docs`
 
-## Run fulfilment_validation
-
-```bash
-export MQTT_HOST=your-broker.example.com
-export MQTT_PORT=8883
-export ACTUAL_SCHEDULES_TOPIC=mas4te/battery-storage/actual_schedules
-export DB_PATH=database.db
-
-python ./src/fulfilment_validation/main.py
-```
-
-See [src/fulfilment_validation/README.md](src/fulfilment_validation/README.md) for details.
+See [api/README.md](api/README.md) for endpoint details.
