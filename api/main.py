@@ -90,12 +90,6 @@ def verify_password(
     return credentials.username
 
 
-def _bad_request(detail: str) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail
-    )
-
-
 @app.post("/power_request", status_code=status.HTTP_200_OK)
 def power_request(
     payload: TimeseriesPayload,
@@ -117,7 +111,9 @@ def power_request(
             util.validate_real_world_test(payload)
         except ValueError as exc:
             logger.warning("Rejected power request: %s", exc)
-            raise _bad_request(str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            )
 
     series_dict = {
         ts_name: getattr(payload, ts_name)
