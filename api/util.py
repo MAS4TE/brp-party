@@ -8,6 +8,8 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from fastapi import Response
+from fastapi.responses import JSONResponse
 
 import pandas as pd
 
@@ -188,7 +190,7 @@ def calc_missing_energy_timeseries(
 
 def validate_actual_schedule(
     conn: sqlite3.Connection, payload: ActualSchedulePayload
-) -> dict:
+) -> Response:
     """Validate a fulfiller's actual schedule against the stored requested one.
 
     The payload is already schema-validated by FastAPI/Pydantic. Business-level
@@ -234,7 +236,10 @@ def validate_actual_schedule(
 
     if errors:
         write_invalid_actual_schedule_to_db(conn, request_id, received_at, errors)
-        return {"request_id": request_id, "valid": False, "errors": errors}
+        return JSONResponse(
+            content={"request_id": request_id, "valid": False, "errors": errors},
+            status_code=422,
+        )
 
     missing_energy_timeseries = calc_missing_energy_timeseries(
         actual_schedule, requested_schedule
@@ -243,9 +248,12 @@ def validate_actual_schedule(
         conn, request_id, received_at, missing_energy_timeseries
     )
 
-    return {
-        "request_id": request_id,
-        "valid": True,
-        "errors": [],
-        "missing_energy_wh": missing_energy_timeseries["missing_energy_wh"].sum(),
-    }
+    return JSONResponse(
+        content={
+            "request_id": request_id,
+            "valid": True,
+            "errors": [],
+            "missing_energy_wh": missing_energy_timeseries["missing_energy_wh"].sum(),
+        },
+        status_code=200,
+    )
