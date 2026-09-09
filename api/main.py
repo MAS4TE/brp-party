@@ -199,6 +199,6 @@ def actual_schedule(
     logger.info(
         "Validated actual schedule for request_id=%s: valid=%s",
         payload.request_id,
-        result.body["valid"],
+        result["valid"],
     )
     return result
