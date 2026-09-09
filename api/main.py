@@ -18,12 +18,17 @@ import sqlite3
 
 import paho.mqtt.publish as mqtt_publish
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status, Response
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import pandas as pd
 
 import util
-from models import TimeseriesPayload, ActualSchedulePayload, SERIES_NAMES
+from models import (
+    TimeseriesPayload,
+    ActualSchedulePayload,
+    PowerRequestResponse,
+    SERIES_NAMES,
+)
 
 load_dotenv()
 
@@ -90,7 +95,11 @@ def verify_password(
     return credentials.username
 
 
-@app.post("/power_request", status_code=status.HTTP_200_OK)
+@app.post(
+    "/power_request",
+    status_code=status.HTTP_200_OK,
+    response_model=PowerRequestResponse,
+)
 def power_request(
     payload: TimeseriesPayload,
     user: Annotated[str, Depends(verify_password)],
@@ -167,7 +176,7 @@ def power_request(
     finally:
         conn.close()
 
-    return Response(status_code=status.HTTP_200_OK)
+    return PowerRequestResponse(request_id=request_id)
 
 
 @app.post("/actual_schedule", status_code=status.HTTP_200_OK)

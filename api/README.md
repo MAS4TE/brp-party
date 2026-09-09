@@ -59,7 +59,7 @@ Interactive API docs: `http://localhost:8000/docs`
 - **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
 - **Body:** 1–4 optional series (`eeg`, `wholesale`, `community`, `home`) plus `time_steps`.
 - **Query parameter:** `is_real_world_test` (boolean, default `false`). When `true`, additional checks apply (see below).
-- **Response:** `200 OK` with an empty body on success.
+- **Response:** `200 OK` with the `request_id` assigned to this request.
 
 ### Request body schema
 
@@ -77,6 +77,18 @@ Interactive API docs: `http://localhost:8000/docs`
 ```
 
 At least one series must be present. Each provided series must have the same length as `time_steps`.
+
+### Response
+
+```json
+{
+  "request_id": "200312c0-cb21-479d-82ec-037077f0bc44"
+}
+```
+
+The same `request_id` is published to the fulfiller via MQTT and is the key the fulfiller
+reports back to `POST /actual_schedule`. Keep it if you want to correlate a request with the
+schedule that was actually driven.
 
 **Validation (always):**
 
@@ -144,12 +156,14 @@ payload = {
     **{col: df[col].tolist() for col in df.columns},
 }
 
-requests.post(
+response = requests.post(
     "http://localhost:8000/power_request",
     params={"is_real_world_test": False},
     auth=("brp", "secret"),
     json=payload,
-).raise_for_status()
+)
+response.raise_for_status()
+request_id = response.json()["request_id"]
 ```
 
 ### curl example
@@ -194,7 +208,7 @@ returns the validation result synchronously.
 }
 ```
 
-`request_id` must match a schedule previously stored by `POST /power_request`, and
+`request_id` must be the one returned by (and published for) `POST /power_request`, and
 `time_steps` must equal the stored ones.
 
 ### Response

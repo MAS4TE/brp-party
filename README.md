@@ -20,7 +20,8 @@ Single FastAPI service for BRP schedule handling.
 ## Flow
 
 1. Lina sends a power-request schedule to `POST /power_request`. The service validates
-   and aggregates it, persists it to SQLite, and publishes it to Bob via MQTT.
+   and aggregates it, persists it to SQLite, publishes it to Bob via MQTT, and returns the
+   `request_id` it assigned.
 2. Bob drives the schedule and reports the actually driven schedule back to
    `POST /actual_schedule`. The service validates it against the stored request and
    returns the validation result synchronously (no MQTT round-trip).

@@ -59,6 +59,16 @@ class TimeseriesPayload(BaseModel):
         return value
 
 
+class PowerRequestResponse(BaseModel):
+    """Identifier of the accepted power request.
+
+    The fulfiller receives the same ``request_id`` via MQTT and echoes it back in
+    :class:`ActualSchedulePayload`, so the requester needs it to correlate the two.
+    """
+
+    request_id: str
+
+
 class ActualSchedulePayload(BaseModel):
     """Schedule actually driven by the fulfiller, sent back for validation."""
 
