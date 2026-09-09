@@ -95,7 +95,10 @@ At least one series must be present. Each provided series must have the same len
 On success, each timestep is stored as one row in the table `requested_aggregated_schedules`
 in the database at `DB_PATH` (long table: `request_id`, `time_steps`, `power_rate_w`,
 `requested_at` — UTC timestamp shared by all rows of the request).
-Rows are written before MQTT publish; on publish failure the transaction is rolled back.
+Rows are written and committed before the MQTT publish. If the insert itself fails, the
+transaction is rolled back and nothing is stored. If the insert succeeds but the subsequent
+MQTT publish fails, the rows stay in the database and the request still returns `500` — the
+stored request and what was actually published to Bob can therefore diverge.
 
 ### MQTT payload
 
