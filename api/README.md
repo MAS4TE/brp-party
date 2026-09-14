@@ -93,6 +93,7 @@ schedule that was actually driven.
 **Validation (always):**
 
 - `time_steps` must be ISO 8601 datetimes, strictly increasing, with no duplicates.
+  Ordering is checked on the parsed datetimes, so it holds across differing UTC offsets.
 - Do not mix timezone-aware and timezone-naive values in one request.
 - Series lengths must match `time_steps` (enforced by Pydantic and again in the handler).
 
@@ -119,12 +120,25 @@ On success, the service publishes a JSON object with `request_id`, `time_steps`,
 ```json
 {
   "request_id": "…",
-  "time_steps": ["2026-05-08 12:00:00", "2026-05-08 12:15:00"],
+  "time_steps": ["2026-05-08T10:00:00+00:00", "2026-05-08T10:15:00+00:00"],
   "power_rate_w": [20.0, 980.0]
 }
 ```
 
 Publishing uses QoS 1 and TLS (`tls={}` in the Paho client).
+
+### Canonical timestamp form
+
+`time_steps` are normalised before they are published and stored, so that one instant has
+exactly one spelling:
+
+- Timezone-aware values are converted to UTC and rendered as ISO 8601 with an explicit
+  `+00:00` offset (`2026-05-08T10:00:00+00:00`).
+- Timezone-naive values stay naive (`2026-05-08T12:00:00`); their zone is unknown and is
+  not invented.
+
+Because the form is ISO 8601 with a uniform offset, sorting the stored strings
+lexicographically also sorts them chronologically.
 
 ### Error responses
 
@@ -209,7 +223,12 @@ returns the validation result synchronously.
 ```
 
 `request_id` must be the one returned by (and published for) `POST /power_request`, and
-`time_steps` must equal the stored ones.
+`time_steps` must denote the same instants as the stored ones.
+
+The comparison is made on the canonical form described above, not on the raw text, so any
+ISO 8601 spelling of the right instant is accepted — `T` or a space as separator, and any
+UTC offset. A timestamp that cannot be parsed as ISO 8601 is reported as a validation
+error (`200 OK` with `valid: false`), not as a `422`.
 
 ### Response
 
@@ -256,6 +275,7 @@ All rows have `request_id`, `received_at` (UTC timestamp of this submission), an
 | ------ | ---- |
 | `401` | Invalid HTTP Basic password |
 | `422` | Body does not match the schema (e.g. `power_rate_w`/`time_steps` length mismatch) |
+| `200` with `valid: false` | Unknown `request_id`, `time_steps` mismatch, or an unparseable timestamp |
 | `500` | SQLite read/persist failed |
 
 ### curl example

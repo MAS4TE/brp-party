@@ -16,9 +16,12 @@ class TimeseriesPayload(BaseModel):
     community: None | list[float] = None
     home: None | list[float] = None
 
-    @field_validator("time_steps", mode="before")
+    @field_validator("time_steps")
     @classmethod
     def _check_time_steps_sorted(cls, value: list[datetime]) -> list[datetime]:
+        """Run after parsing, so the comparison is on real datetimes rather than on the
+        raw strings — otherwise ordering would be decided lexicographically and mixing
+        tz-aware with tz-naive values would go unnoticed."""
         for prev, cur in zip(value, value[1:]):
             try:
                 if cur <= prev:

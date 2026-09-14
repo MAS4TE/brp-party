@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -24,6 +25,34 @@ def require_env_vars(name_value_pairs: list[tuple[str, str | None]]) -> None:
         )
 
 
+def canonical_time_steps(time_steps: Sequence[datetime | str]) -> list[str]:
+    """Render timestamps in the one textual form used on the wire, in the database and
+    for every comparison.
+
+    Accepts datetimes as well as strings in any ISO 8601 spelling (``T`` or a space as
+    separator, any offset); accepting all of them is what makes comparisons independent
+    of how the sender wrote them. Timezone-aware values are converted to UTC so that two
+    spellings of the same instant produce the same string. Naive values stay naive:
+    their zone is unknown and must not be invented. The result is ISO 8601, so sorting
+    the strings lexicographically also sorts them chronologically.
+
+    Raises ValueError naming the offending value if a string is not ISO 8601.
+    """
+    canonical = []
+    for step in time_steps:
+        if isinstance(step, str):
+            try:
+                step = datetime.fromisoformat(step)
+            except ValueError as exc:
+                raise ValueError(
+                    f"time_steps contains a value that is not an ISO 8601 datetime: {step!r}."
+                ) from exc
+        if step.tzinfo is not None:
+            step = step.astimezone(timezone.utc)
+        canonical.append(step.isoformat())
+    return canonical
+
+
 def aggregate_power_series(payload: TimeseriesPayload) -> tuple[list[str], list[float]]:
     """Sum provided series per timestep and convert aggregated power from kW to W."""
     series_dict = {
@@ -34,8 +63,7 @@ def aggregate_power_series(payload: TimeseriesPayload) -> tuple[list[str], list[
     df = pd.DataFrame(series_dict, index=payload.time_steps)
     aggregated_kw = df.sum(axis=1)
     power_rate_w = (aggregated_kw * 1000).tolist()
-    mqtt_timesteps = pd.to_datetime(payload.time_steps).astype(str).tolist()
-    return mqtt_timesteps, power_rate_w
+    return canonical_time_steps(payload.time_steps), power_rate_w
 
 
 def is_quarter_hour_aligned(dt: datetime) -> bool:
@@ -200,9 +228,19 @@ def validate_actual_schedule(
     """
     received_at = datetime.now(timezone.utc).isoformat()
     request_id = payload.request_id
+
+    # Compare canonical forms, not raw text: the fulfiller may spell a timestamp
+    # differently and still mean the same instant. An unparseable timestamp is a
+    # validation outcome, not a server error.
+    try:
+        actual_time_steps = canonical_time_steps(payload.time_steps)
+    except ValueError as exc:
+        write_invalid_actual_schedule_to_db(conn, request_id, received_at, [str(exc)])
+        return {"request_id": request_id, "valid": False, "errors": [str(exc)]}
+
     actual_schedule = pd.DataFrame(
         {
-            "time_steps": payload.time_steps,
+            "time_steps": actual_time_steps,
             "power_rate_w": payload.power_rate_w,
         }
     )
@@ -212,10 +250,18 @@ def validate_actual_schedule(
         SELECT time_steps, power_rate_w
         FROM requested_aggregated_schedules
         WHERE request_id = ?
-        ORDER BY time_steps
         """,
         conn,
         params=(request_id,),
+    )
+    # Canonicalise the stored side too: rows written before this format existed still
+    # carry pandas' space-separated spelling. Sorting then happens on the canonical
+    # form, which is why the query above needs no ORDER BY.
+    requested_schedule["time_steps"] = canonical_time_steps(
+        requested_schedule["time_steps"].tolist()
+    )
+    requested_schedule = requested_schedule.sort_values("time_steps").reset_index(
+        drop=True
     )
 
     # check for a matching original schedule before comparing time_steps, since an
