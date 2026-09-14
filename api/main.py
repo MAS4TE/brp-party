@@ -140,6 +140,7 @@ def power_request(
     request_id = str(uuid4())
     mqtt_payload = {
         "request_id": request_id,
+        "type": "requested",
         "time_steps": mqtt_timesteps,
         "power_rate_w": power_rate_w,
     }

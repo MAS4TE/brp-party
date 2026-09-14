@@ -115,11 +115,13 @@ stored request and what was actually published to Bob can therefore diverge.
 
 ### MQTT payload
 
-On success, the service publishes a JSON object with `request_id`, `time_steps`, and `power_rate_w` (aggregated power in watts):
+On success, the service publishes a JSON object with `request_id`, `type`, `time_steps`,
+and `power_rate_w` (aggregated power in watts):
 
 ```json
 {
   "request_id": "…",
+  "type": "requested",
   "time_steps": ["2026-05-08T10:00:00+00:00", "2026-05-08T10:15:00+00:00"],
   "power_rate_w": [20.0, 980.0]
 }
