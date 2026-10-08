@@ -2,19 +2,26 @@
 #
 # SPDX-License-Identifier: MIT
 
-from datetime import datetime
-from pydantic import BaseModel, ValidationInfo, field_validator
+from datetime import datetime, timedelta
+from pydantic import (
+    BaseModel,
+    FiniteFloat,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 ALLOWED_SERIES = {"eeg", "wholesale", "community", "home"}
 SERIES_NAMES = ("eeg", "wholesale", "community", "home")
+TIME_STEP = timedelta(minutes=15)
 
 
 class TimeseriesPayload(BaseModel):
     time_steps: list[datetime]
-    eeg: None | list[float] = None
-    wholesale: None | list[float] = None
-    community: None | list[float] = None
-    home: None | list[float] = None
+    eeg: None | list[FiniteFloat] = None
+    wholesale: None | list[FiniteFloat] = None
+    community: None | list[FiniteFloat] = None
+    home: None | list[FiniteFloat] = None
 
     @field_validator("time_steps")
     @classmethod
@@ -28,6 +35,8 @@ class TimeseriesPayload(BaseModel):
                     raise ValueError(
                         "time_steps must be strictly increasing (sorted ascending, no duplicates)."
                     )
+                if cur - prev != TIME_STEP:
+                    raise ValueError("time_steps must be exactly 15 minutes apart.")
             except TypeError as exc:
                 raise ValueError(
                     "time_steps must be comparable datetimes (do not mix tz-aware and tz-naive values)."
@@ -61,6 +70,14 @@ class TimeseriesPayload(BaseModel):
             )
         return value
 
+    @model_validator(mode="after")
+    def _check_at_least_one_series(self) -> "TimeseriesPayload":
+        if all(getattr(self, name) is None for name in SERIES_NAMES):
+            raise ValueError(
+                f"At least one series must be present ({', '.join(SERIES_NAMES)})."
+            )
+        return self
+
 
 class PowerRequestResponse(BaseModel):
     """Identifier of the accepted power request.
@@ -77,7 +94,7 @@ class ActualSchedulePayload(BaseModel):
 
     request_id: str
     time_steps: list[str]
-    power_rate_w: list[float]
+    power_rate_w: list[FiniteFloat]
 
     @field_validator("power_rate_w")
     @classmethod

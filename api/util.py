@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from models import SERIES_NAMES, ActualSchedulePayload, TimeseriesPayload
+from models import SERIES_NAMES, TIME_STEP, ActualSchedulePayload, TimeseriesPayload
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,10 @@ def calc_missing_energy_timeseries(
     )
     diff = merged["power_rate_w_requested"] - merged["power_rate_w_actual"]
     is_underdelivered_discharge = (merged["power_rate_w_requested"] < 0) & (diff < 0)
-    missing_energy_wh = (diff.abs() * 0.25).where(is_underdelivered_discharge, 0.0)
+    step_hours = TIME_STEP / timedelta(hours=1)
+    missing_energy_wh = (diff.abs() * step_hours).where(
+        is_underdelivered_discharge, 0.0
+    )
 
     return pd.DataFrame(
         {

@@ -32,8 +32,8 @@ Optional: create a `.env` file in the repository root (loaded via `python-dotenv
 | `MQTT_HOST` | yes | MQTT broker hostname |
 | `MQTT_PORT` | yes | MQTT broker port (TLS) |
 | `REQUESTING_SCHEDULE_TOPIC` | yes | Topic for the aggregated power request |
-| `MQTT_USER` | no | MQTT username |
-| `MQTT_PASSWORD` | no | MQTT password |
+| `MQTT_USER` | yes | MQTT username |
+| `MQTT_PASSWORD` | yes | MQTT password |
 | `DB_PATH` | yes | SQLite database file |
 
 ## Running
@@ -94,6 +94,9 @@ schedule that was actually driven.
 
 - `time_steps` must be ISO 8601 datetimes, strictly increasing, with no duplicates.
   Ordering is checked on the parsed datetimes, so it holds across differing UTC offsets.
+- Consecutive `time_steps` must be exactly 15 minutes apart.
+- At least one series must be present.
+- Series values must be finite numbers (`NaN` and `Infinity` are rejected).
 - Do not mix timezone-aware and timezone-naive values in one request.
 - Series lengths must match `time_steps` (enforced by Pydantic and again in the handler).
 
