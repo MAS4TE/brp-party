@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 import sqlite3
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import pandas as pd
 
@@ -35,7 +35,8 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 POWER_REQUEST_PASSWORD = os.getenv("POWER_REQUEST_PASSWORD")
-# only ASSUME may send market results, so it gets its own password
+# only ASSUME may send market results, so it gets its own user and password
+MARKET_RESULTS_USER = "assume"
 MARKET_RESULTS_PASSWORD = os.getenv("MARKET_RESULTS_PASSWORD")
 
 DB_PATH = os.getenv("DB_PATH")
@@ -241,17 +242,23 @@ def actual_schedule(
 @app.post("/market_results", status_code=status.HTTP_200_OK)
 def market_results(
     payload: MarketResultsPayload,
-    x_market_results_password: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPBasicCredentials, Depends(security)],
 ):
-    # only ASSUME knows this password; no username needed
-    if x_market_results_password is None or not secrets.compare_digest(
-        x_market_results_password.encode("utf-8"),
-        MARKET_RESULTS_PASSWORD.encode("utf-8"),
-    ):
-        logger.warning("Invalid market results password")
+    # compare both, so neither the username nor the password leaks by timing
+    is_user_ok = secrets.compare_digest(
+        credentials.username.encode("utf-8"), MARKET_RESULTS_USER.encode("utf-8")
+    )
+    is_password_ok = secrets.compare_digest(
+        credentials.password.encode("utf-8"), MARKET_RESULTS_PASSWORD.encode("utf-8")
+    )
+    if not (is_user_ok and is_password_ok):
+        logger.warning(
+            "Invalid market results credentials for user '%s'", credentials.username
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials.",
+            headers={"WWW-Authenticate": "Basic"},
         )
 
     logger.info(

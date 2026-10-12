@@ -35,7 +35,7 @@ Optional: create a `.env` file in the repository root (loaded via `python-dotenv
 | Variable | Required | Purpose |
 | -------- | -------- | ------- |
 | `POWER_REQUEST_PASSWORD` | yes | Password for HTTP Basic Auth of buyers and sellers |
-| `MARKET_RESULTS_PASSWORD` | yes | Password ASSUME sends in the header `X-Market-Results-Password` to `POST /market_results` |
+| `MARKET_RESULTS_PASSWORD` | yes | HTTP Basic Auth password of ASSUME (username `assume`) at `POST /market_results` |
 | `DB_PATH` | yes | SQLite database file |
 
 [`example.env`](../example.env) lists them; copy it to `.env` in the repository root.
@@ -353,7 +353,7 @@ curl -u bob:secret \
 Sent by ASSUME after every clearing of the battery market. Tells the service who was
 awarded how much, for which delivery period, and with which counterparties.
 
-- **Authentication:** header `X-Market-Results-Password` must match `MARKET_RESULTS_PASSWORD` (no username, no HTTP Basic Auth).
+- **Authentication:** HTTP Basic Auth with username `assume` and password `MARKET_RESULTS_PASSWORD`.
 - **Body:** `market_id`, the delivery period of the cleared product (`start_time`,
   `end_time`), and the list of accepted `orders`. Rejected orders are not sent; the list is
   empty if nothing was traded.
@@ -414,6 +414,6 @@ one transaction.
 
 | Status | When |
 | ------ | ---- |
-| `401` | Missing or invalid `X-Market-Results-Password` |
+| `401` | Invalid HTTP Basic username or password |
 | `422` | Body does not match the schema |
 | `500` | SQLite persist failed |
