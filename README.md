@@ -39,12 +39,14 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Optional: create a `.env` file in the repository root (loaded via `python-dotenv`).
+Optional: create a `.env` file in the repository root (loaded via `python-dotenv`); see
+[`example.env`](example.env).
 
 ## Run
 
 ```bash
 export API_PASSWORD=secret
+export MARKET_RESULTS_PASSWORD=other-secret
 export DB_PATH=database.db
 
 uvicorn --app-dir ./api main:app --reload

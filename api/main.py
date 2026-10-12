@@ -35,12 +35,15 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 API_PASSWORD = os.getenv("API_PASSWORD")
+# only ASSUME may send market results, so it gets its own password
+MARKET_RESULTS_PASSWORD = os.getenv("MARKET_RESULTS_PASSWORD")
 
 DB_PATH = os.getenv("DB_PATH")
 
 util.require_env_vars(
     [
         ("API_PASSWORD", API_PASSWORD),
+        ("MARKET_RESULTS_PASSWORD", MARKET_RESULTS_PASSWORD),
         ("DB_PATH", DB_PATH),
     ]
 )
@@ -81,6 +84,26 @@ def verify_password(
             headers={"WWW-Authenticate": "Basic"},
         )
     logger.info("Authenticated request for user '%s'", credentials.username)
+    return credentials.username
+
+
+def verify_market_results_password(
+    credentials: Annotated[HTTPBasicCredentials, Depends(security)],
+) -> str:
+    if not secrets.compare_digest(
+        credentials.password.encode("utf-8"), MARKET_RESULTS_PASSWORD.encode("utf-8")
+    ):
+        logger.warning(
+            "Invalid market results credentials for user '%s'", credentials.username
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials.",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    logger.info(
+        "Authenticated market results request for user '%s'", credentials.username
+    )
     return credentials.username
 
 
@@ -238,7 +261,7 @@ def actual_schedule(
 @app.post("/market_results", status_code=status.HTTP_200_OK)
 def market_results(
     payload: MarketResultsPayload,
-    user: Annotated[str, Depends(verify_password)],
+    user: Annotated[str, Depends(verify_market_results_password)],
 ):
     logger.info(
         "Received %d accepted orders of market '%s' from user '%s'",

@@ -34,8 +34,11 @@ Optional: create a `.env` file in the repository root (loaded via `python-dotenv
 
 | Variable | Required | Purpose |
 | -------- | -------- | ------- |
-| `API_PASSWORD` | yes | Password for HTTP Basic Auth |
+| `API_PASSWORD` | yes | Password for HTTP Basic Auth of buyers and sellers |
+| `MARKET_RESULTS_PASSWORD` | yes | Password for HTTP Basic Auth of ASSUME at `POST /market_results` |
 | `DB_PATH` | yes | SQLite database file |
+
+[`example.env`](../example.env) lists them; copy it to `.env` in the repository root.
 
 ## Running
 
@@ -43,6 +46,7 @@ From the repository root:
 
 ```bash
 export API_PASSWORD=secret
+export MARKET_RESULTS_PASSWORD=other-secret
 export DB_PATH=database.db
 
 uvicorn --app-dir ./api main:app --reload
@@ -349,7 +353,7 @@ curl -u bob:secret \
 Sent by ASSUME after every clearing of the battery market. Tells the service who was
 awarded how much, for which delivery period, and with which counterparties.
 
-- **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
+- **Authentication:** HTTP Basic Auth (username is ignored; password must match `MARKET_RESULTS_PASSWORD`).
 - **Body:** `market_id`, the delivery period of the cleared product (`start_time`,
   `end_time`), and the list of accepted `orders`. Rejected orders are not sent; the list is
   empty if nothing was traded.
