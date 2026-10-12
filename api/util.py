@@ -112,27 +112,140 @@ def create_table(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
     _ensure_column(conn, "requested_aggregated_schedules", "requested_at", "TEXT")
+    _ensure_column(conn, "requested_aggregated_schedules", "blockchain_address", "TEXT")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS power_request_assignments (
+            request_id TEXT,
+            seller_blockchain_address TEXT,
+            share REAL
+        )
+    """)
+    conn.commit()
 
 
 def write_requested_aggregated_schedule_to_db(
-    conn: sqlite3.Connection, df: pd.DataFrame
+    conn: sqlite3.Connection,
+    df: pd.DataFrame,
+    blockchain_address: str,
+    seller_shares: dict[str, float],
 ) -> None:
+    """Store the requested schedule and which seller fulfils which share of it."""
     requested_at = datetime.now(timezone.utc).isoformat()
     cur = conn.cursor()
     cur.executemany(
         """
         INSERT INTO requested_aggregated_schedules
-        (request_id, time_steps, power_rate_w, requested_at)
-        VALUES (?, ?, ?, ?)
+        (request_id, time_steps, power_rate_w, requested_at, blockchain_address)
+        VALUES (?, ?, ?, ?, ?)
         """,
         [
-            (request_id, time_steps, power_rate_w, requested_at)
+            (request_id, time_steps, power_rate_w, requested_at, blockchain_address)
             for request_id, time_steps, power_rate_w in df[
                 ["request_id", "time_steps", "power_rate_w"]
             ].itertuples(index=False, name=None)
         ],
     )
+    request_id = df["request_id"].iloc[0]
+    cur.executemany(
+        """
+        INSERT INTO power_request_assignments
+        (request_id, seller_blockchain_address, share)
+        VALUES (?, ?, ?)
+        """,
+        [(request_id, seller, share) for seller, share in seller_shares.items()],
+    )
     conn.commit()
+
+
+def find_seller_shares(
+    conn: sqlite3.Connection, buyer_address: str, time_steps: list[str]
+) -> dict[str, float]:
+    """Sellers the buyer was matched with for the period of the schedule, with
+    the share of the schedule each of them fulfils (by matched volume).
+
+    Empty if the buyer has no accepted order whose delivery period covers all
+    time_steps.
+    """
+    first_step = datetime.fromisoformat(time_steps[0])
+    last_step_end = datetime.fromisoformat(time_steps[-1]) + TIME_STEP
+
+    # DISTINCT, so market results that were sent twice are not counted twice
+    rows = conn.execute(
+        """
+        SELECT DISTINCT market_id, bid_id, start_time, end_time, matches
+        FROM market_results
+        WHERE blockchain_address = ? AND accepted_volume < 0
+        """,
+        (buyer_address,),
+    ).fetchall()
+
+    seller_volumes: dict[str, float] = {}
+    for _, _, start_time, end_time, matches in rows:
+        try:
+            is_covered = datetime.fromisoformat(
+                start_time
+            ) <= first_step and last_step_end <= datetime.fromisoformat(end_time)
+        except TypeError:
+            # tz-aware schedule vs. tz-naive market result (or vice versa)
+            is_covered = False
+        if not is_covered:
+            continue
+        for match in json.loads(matches):
+            seller = match["blockchain_address"]
+            seller_volumes[seller] = seller_volumes.get(seller, 0) + match["volume"]
+
+    total_volume = sum(seller_volumes.values())
+    return {seller: volume / total_volume for seller, volume in seller_volumes.items()}
+
+
+def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[dict]:
+    """Schedules assigned to the seller that it has not validly reported yet,
+    each scaled to the seller's share."""
+    assignments = conn.execute(
+        """
+        SELECT a.request_id, a.share
+        FROM power_request_assignments a
+        WHERE a.seller_blockchain_address = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM actual_schedules s
+              WHERE s.request_id = a.request_id
+                AND s.blockchain_address = a.seller_blockchain_address
+                AND s.valid = 1
+          )
+        """,
+        (seller_address,),
+    ).fetchall()
+
+    open_schedules = []
+    for request_id, share in assignments:
+        schedule = read_requested_schedule(conn, request_id)
+        open_schedules.append(
+            {
+                "request_id": request_id,
+                "time_steps": schedule["time_steps"].tolist(),
+                "power_rate_w": (schedule["power_rate_w"] * share).tolist(),
+            }
+        )
+    return open_schedules
+
+
+def read_requested_schedule(conn: sqlite3.Connection, request_id: str) -> pd.DataFrame:
+    requested_schedule = pd.read_sql_query(
+        """
+        SELECT time_steps, power_rate_w
+        FROM requested_aggregated_schedules
+        WHERE request_id = ?
+        """,
+        conn,
+        params=(request_id,),
+    )
+    # Canonicalise the stored side too: rows written before this format existed still
+    # carry pandas' space-separated spelling. Sorting then happens on the canonical
+    # form, which is why the query above needs no ORDER BY.
+    requested_schedule["time_steps"] = canonical_time_steps(
+        requested_schedule["time_steps"].tolist()
+    )
+    return requested_schedule.sort_values("time_steps").reset_index(drop=True)
 
 
 def create_actual_schedules_table(conn: sqlite3.Connection) -> None:
@@ -149,11 +262,13 @@ def create_actual_schedules_table(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
     _ensure_column(conn, "actual_schedules", "missing_energy_wh", "REAL")
+    _ensure_column(conn, "actual_schedules", "blockchain_address", "TEXT")
 
 
 def write_valid_actual_schedule_to_db(
     conn: sqlite3.Connection,
     request_id: str,
+    blockchain_address: str,
     received_at: str,
     schedule: pd.DataFrame,
 ) -> None:
@@ -162,11 +277,18 @@ def write_valid_actual_schedule_to_db(
     cur.executemany(
         """
         INSERT INTO actual_schedules
-        (request_id, time_steps, power_rate_w, missing_energy_wh, received_at, valid, validation_errors)
-        VALUES (?, ?, ?, ?, ?, 1, '[]')
+        (request_id, blockchain_address, time_steps, power_rate_w, missing_energy_wh, received_at, valid, validation_errors)
+        VALUES (?, ?, ?, ?, ?, ?, 1, '[]')
         """,
         [
-            (request_id, time_steps, power_rate_w, missing_energy_wh, received_at)
+            (
+                request_id,
+                blockchain_address,
+                time_steps,
+                power_rate_w,
+                missing_energy_wh,
+                received_at,
+            )
             for time_steps, power_rate_w, missing_energy_wh in schedule[
                 ["time_steps", "power_rate_w", "missing_energy_wh"]
             ].itertuples(index=False, name=None)
@@ -178,6 +300,7 @@ def write_valid_actual_schedule_to_db(
 def write_invalid_actual_schedule_to_db(
     conn: sqlite3.Connection,
     request_id: str,
+    blockchain_address: str,
     received_at: str,
     errors: list[str],
 ) -> None:
@@ -185,10 +308,10 @@ def write_invalid_actual_schedule_to_db(
     conn.execute(
         """
         INSERT INTO actual_schedules
-        (request_id, time_steps, power_rate_w, missing_energy_wh, received_at, valid, validation_errors)
-        VALUES (?, NULL, NULL, NULL, ?, 0, ?)
+        (request_id, blockchain_address, time_steps, power_rate_w, missing_energy_wh, received_at, valid, validation_errors)
+        VALUES (?, ?, NULL, NULL, NULL, ?, 0, ?)
         """,
-        (request_id, received_at, json.dumps(errors)),
+        (request_id, blockchain_address, received_at, json.dumps(errors)),
     )
     conn.commit()
 
@@ -285,6 +408,7 @@ def validate_actual_schedule(
     """
     received_at = datetime.now(timezone.utc).isoformat()
     request_id = payload.request_id
+    seller = payload.blockchain_address
 
     # Compare canonical forms, not raw text: the fulfiller may spell a timestamp
     # differently and still mean the same instant. An unparseable timestamp is a
@@ -292,7 +416,9 @@ def validate_actual_schedule(
     try:
         actual_time_steps = canonical_time_steps(payload.time_steps)
     except ValueError as exc:
-        write_invalid_actual_schedule_to_db(conn, request_id, received_at, [str(exc)])
+        write_invalid_actual_schedule_to_db(
+            conn, request_id, seller, received_at, [str(exc)]
+        )
         return {"request_id": request_id, "valid": False, "errors": [str(exc)]}
 
     actual_schedule = pd.DataFrame(
@@ -302,30 +428,24 @@ def validate_actual_schedule(
         }
     )
 
-    requested_schedule = pd.read_sql_query(
+    requested_schedule = read_requested_schedule(conn, request_id)
+    share = conn.execute(
         """
-        SELECT time_steps, power_rate_w
-        FROM requested_aggregated_schedules
-        WHERE request_id = ?
+        SELECT share FROM power_request_assignments
+        WHERE request_id = ? AND seller_blockchain_address = ?
         """,
-        conn,
-        params=(request_id,),
-    )
-    # Canonicalise the stored side too: rows written before this format existed still
-    # carry pandas' space-separated spelling. Sorting then happens on the canonical
-    # form, which is why the query above needs no ORDER BY.
-    requested_schedule["time_steps"] = canonical_time_steps(
-        requested_schedule["time_steps"].tolist()
-    )
-    requested_schedule = requested_schedule.sort_values("time_steps").reset_index(
-        drop=True
-    )
+        (request_id, seller),
+    ).fetchone()
 
     # check for a matching original schedule before comparing time_steps, since an
     # empty requested_schedule would otherwise always look like a time_steps mismatch
     errors: list[str] = []
     if requested_schedule.empty:
         errors.append(f"No original schedule found for request_id {request_id!r}.")
+    elif share is None:
+        errors.append(
+            f"request_id {request_id!r} is not assigned to blockchain_address {seller!r}."
+        )
     elif (
         actual_schedule["time_steps"].tolist()
         != requested_schedule["time_steps"].tolist()
@@ -336,14 +456,18 @@ def validate_actual_schedule(
         )
 
     if errors:
-        write_invalid_actual_schedule_to_db(conn, request_id, received_at, errors)
+        write_invalid_actual_schedule_to_db(
+            conn, request_id, seller, received_at, errors
+        )
         return {"request_id": request_id, "valid": False, "errors": errors}
 
+    # the seller only has to drive its share of the requested schedule
+    requested_schedule["power_rate_w"] *= share[0]
     missing_energy_timeseries = calc_missing_energy_timeseries(
         actual_schedule, requested_schedule
     )
     write_valid_actual_schedule_to_db(
-        conn, request_id, received_at, missing_energy_timeseries
+        conn, request_id, seller, received_at, missing_energy_timeseries
     )
 
     return {

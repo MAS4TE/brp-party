@@ -17,6 +17,8 @@ TIME_STEP = timedelta(minutes=15)
 
 
 class TimeseriesPayload(BaseModel):
+    # identifies the buyer; the schedule is assigned to the sellers it was matched with
+    blockchain_address: str
     time_steps: list[datetime]
     eeg: None | list[FiniteFloat] = None
     wholesale: None | list[FiniteFloat] = None
@@ -93,6 +95,8 @@ class ActualSchedulePayload(BaseModel):
     """Schedule actually driven by the fulfiller, sent back for validation."""
 
     request_id: str
+    # identifies the seller; its share of the request is validated
+    blockchain_address: str
     time_steps: list[str]
     power_rate_w: list[FiniteFloat]
 

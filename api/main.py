@@ -2,8 +2,9 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""FastAPI service: aggregate 1–4 timeseries and publish via MQTT, and validate
-the fulfiller's actual schedule against the stored request."""
+"""FastAPI service: aggregate 1–4 timeseries of a buyer, assign them to the sellers
+it was matched with in the market, hand them out to those sellers, and validate the
+sellers' actual schedules against the stored request."""
 
 from __future__ import annotations
 
@@ -12,11 +13,9 @@ import os
 import secrets
 from typing import Annotated
 from uuid import uuid4
-import json
 from contextlib import asynccontextmanager
 import sqlite3
 
-import paho.mqtt.publish as mqtt_publish
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -37,26 +36,14 @@ logger = logging.getLogger(__name__)
 
 API_PASSWORD = os.getenv("API_PASSWORD")
 
-MQTT_HOST = os.getenv("MQTT_HOST")
-MQTT_PORT = os.getenv("MQTT_PORT")
-MQTT_USER = os.getenv("MQTT_USER")
-MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
-REQUESTING_SCHEDULE_TOPIC = os.getenv("REQUESTING_SCHEDULE_TOPIC")
-
 DB_PATH = os.getenv("DB_PATH")
 
 util.require_env_vars(
     [
         ("API_PASSWORD", API_PASSWORD),
-        ("MQTT_HOST", MQTT_HOST),
-        ("MQTT_PORT", MQTT_PORT),
-        ("MQTT_USER", MQTT_USER),
-        ("MQTT_PASSWORD", MQTT_PASSWORD),
-        ("REQUESTING_SCHEDULE_TOPIC", REQUESTING_SCHEDULE_TOPIC),
         ("DB_PATH", DB_PATH),
     ]
 )
-MQTT_PORT = int(MQTT_PORT)
 
 
 @asynccontextmanager
@@ -138,48 +125,75 @@ def power_request(
         ", ".join(series_dict),
     )
 
-    mqtt_timesteps, power_rate_w = util.aggregate_power_series(payload)
+    time_steps, power_rate_w = util.aggregate_power_series(payload)
     request_id = str(uuid4())
-    mqtt_payload = {
-        "request_id": request_id,
-        "type": "requested",
-        "time_steps": mqtt_timesteps,
-        "power_rate_w": power_rate_w,
-    }
-    auth = {"username": MQTT_USER, "password": MQTT_PASSWORD}
-
-    database_df = pd.DataFrame(mqtt_payload)
+    database_df = pd.DataFrame(
+        {
+            "request_id": request_id,
+            "time_steps": time_steps,
+            "power_rate_w": power_rate_w,
+        }
+    )
 
     conn = sqlite3.connect(DB_PATH)
     try:
-        util.write_requested_aggregated_schedule_to_db(conn, database_df)
+        # only buyers that were awarded storage for this period may send a schedule
+        seller_shares = util.find_seller_shares(
+            conn, payload.blockchain_address, time_steps
+        )
+        if not seller_shares:
+            logger.warning(
+                "Rejected power request: no awarded storage for blockchain_address=%s",
+                payload.blockchain_address,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"No awarded storage for blockchain_address "
+                    f"{payload.blockchain_address!r} in the period of the schedule."
+                ),
+            )
+
+        util.write_requested_aggregated_schedule_to_db(
+            conn, database_df, payload.blockchain_address, seller_shares
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Could not persist schedule to database: %s", e)
         conn.rollback()
-        conn.close()
         raise HTTPException(status_code=500) from e
+    finally:
+        conn.close()
 
+    logger.info(
+        "Stored power request %s, assigned to sellers: %s",
+        request_id,
+        seller_shares,
+    )
+    return PowerRequestResponse(request_id=request_id)
+
+
+@app.get("/power_requests", status_code=status.HTTP_200_OK)
+def power_requests(
+    blockchain_address: str,
+    user: Annotated[str, Depends(verify_password)],
+):
+    """Polled by the sellers: the schedules they still have to fulfil."""
+    conn = sqlite3.connect(DB_PATH)
     try:
-        mqtt_publish.single(
-            topic=REQUESTING_SCHEDULE_TOPIC,
-            payload=json.dumps(mqtt_payload),
-            qos=1,
-            hostname=MQTT_HOST,
-            port=MQTT_PORT,
-            auth=auth,
-            tls={},
-        )
+        open_schedules = util.get_open_schedules(conn, blockchain_address)
     except Exception as e:
         logger.error(
-            "Schedule persisted but MQTT publish failed for request_id=%s: %s",
-            request_id,
+            "Failed to read open schedules for blockchain_address=%s: %s",
+            blockchain_address,
             e,
         )
         raise HTTPException(status_code=500) from e
     finally:
         conn.close()
 
-    return PowerRequestResponse(request_id=request_id)
+    return open_schedules
 
 
 @app.post("/actual_schedule", status_code=status.HTTP_200_OK)
