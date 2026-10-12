@@ -138,7 +138,7 @@ def power_request(
     conn = sqlite3.connect(DB_PATH)
     try:
         # only buyers that were awarded storage for this period may send a schedule
-        seller_shares = util.find_seller_shares(
+        seller_shares, market_periods = util.find_seller_shares(
             conn, payload.blockchain_address, time_steps
         )
         if not seller_shares:
@@ -155,7 +155,12 @@ def power_request(
             )
 
         util.write_requested_aggregated_schedule_to_db(
-            conn, database_df, payload.blockchain_address, seller_shares
+            conn,
+            database_df,
+            payload.blockchain_address,
+            seller_shares,
+            market_periods,
+            is_real_world_test,
         )
     except HTTPException:
         raise

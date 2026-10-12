@@ -131,9 +131,11 @@ quarter-hour grid and in the same timezone form (both naive or both with offset)
 On success, each timestep is stored as one row in the table `requested_aggregated_schedules`
 in the database at `DB_PATH` (long table: `request_id`, `time_steps`, `power_rate_w`,
 `requested_at` — UTC timestamp shared by all rows of the request, `blockchain_address` of
-the buyer). Each assigned seller gets one row in `power_request_assignments`
-(`request_id`, `seller_blockchain_address`, `share`). Both are written in one transaction;
-if it fails, nothing is stored.
+the buyer, `is_real_world_test`). Each assigned seller gets one row in
+`power_request_assignments` (`request_id`, `seller_blockchain_address`, `share`), and each
+market period the assignment is based on one row in `power_request_market_periods`
+(`request_id`, `market_id`, `start_time`). All are written in one transaction; if it fails,
+nothing is stored.
 
 ### Canonical timestamp form
 
@@ -221,6 +223,10 @@ Polled by the sellers (e.g. every 30 s) to learn which schedules they have to fu
 - **Response:** `200 OK` with a list of every schedule assigned to the seller that it has not
   yet validly reported via `POST /actual_schedule`. The same schedule is returned on every
   poll until then, so use `request_id` to recognise schedules you already know.
+  Schedules sent with `is_real_world_test=true` are left out once their last time step is
+  over (server time, using the schedule's timezone when present). Simulated schedules lie in
+  the past on purpose and stay in the list until they are reported or their market period
+  is cleared again (see `POST /market_results`).
 
 `power_rate_w` is the seller's share of the requested power (W):
 
@@ -396,7 +402,9 @@ canonical timestamp form described above.
 
 A result for a `market_id` and delivery `start_time` that is already stored (e.g. from a
 re-run of the simulation) is replaced, not added to, also if the new result has no accepted
-orders. Delete and insert happen in one transaction.
+orders. The power requests that were assigned from the old result are deleted with it, since
+their assignment is outdated; buyers have to send them again. Deletes and insert happen in
+one transaction.
 
 ### Error responses
 

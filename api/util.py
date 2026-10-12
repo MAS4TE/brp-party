@@ -113,11 +113,22 @@ def create_table(conn: sqlite3.Connection) -> None:
     conn.commit()
     _ensure_column(conn, "requested_aggregated_schedules", "requested_at", "TEXT")
     _ensure_column(conn, "requested_aggregated_schedules", "blockchain_address", "TEXT")
+    _ensure_column(
+        conn, "requested_aggregated_schedules", "is_real_world_test", "INTEGER"
+    )
     conn.execute("""
         CREATE TABLE IF NOT EXISTS power_request_assignments (
             request_id TEXT,
             seller_blockchain_address TEXT,
             share REAL
+        )
+    """)
+    # market periods whose results a request was assigned from
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS power_request_market_periods (
+            request_id TEXT,
+            market_id TEXT,
+            start_time TEXT
         )
     """)
     conn.commit()
@@ -128,8 +139,11 @@ def write_requested_aggregated_schedule_to_db(
     df: pd.DataFrame,
     blockchain_address: str,
     seller_shares: dict[str, float],
+    market_periods: set[tuple[str, str]],
+    is_real_world_test: bool,
 ) -> None:
-    """Store the requested schedule and which seller fulfils which share of it.
+    """Store the requested schedule, which seller fulfils which share of it and the
+    market periods the assignment is based on.
 
     The new schedule replaces the buyer's older requests where they overlap: their
     time_steps that the new one also covers are deleted, the others stay.
@@ -154,11 +168,18 @@ def write_requested_aggregated_schedule_to_db(
     cur.executemany(
         """
         INSERT INTO requested_aggregated_schedules
-        (request_id, time_steps, power_rate_w, requested_at, blockchain_address)
-        VALUES (?, ?, ?, ?, ?)
+        (request_id, time_steps, power_rate_w, requested_at, blockchain_address, is_real_world_test)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         [
-            (request_id, time_steps, power_rate_w, requested_at, blockchain_address)
+            (
+                request_id,
+                time_steps,
+                power_rate_w,
+                requested_at,
+                blockchain_address,
+                is_real_world_test,
+            )
             for request_id, time_steps, power_rate_w in df[
                 ["request_id", "time_steps", "power_rate_w"]
             ].itertuples(index=False, name=None)
@@ -173,14 +194,25 @@ def write_requested_aggregated_schedule_to_db(
         """,
         [(request_id, seller, share) for seller, share in seller_shares.items()],
     )
+    cur.executemany(
+        """
+        INSERT INTO power_request_market_periods (request_id, market_id, start_time)
+        VALUES (?, ?, ?)
+        """,
+        [
+            (request_id, market_id, start_time)
+            for market_id, start_time in market_periods
+        ],
+    )
     conn.commit()
 
 
 def find_seller_shares(
     conn: sqlite3.Connection, buyer_address: str, time_steps: list[str]
-) -> dict[str, float]:
+) -> tuple[dict[str, float], set[tuple[str, str]]]:
     """Sellers the buyer was matched with for the period of the schedule, with
-    the share of the schedule each of them fulfils (by matched volume).
+    the share of the schedule each of them fulfils (by matched volume), and the
+    market periods (market_id, start_time) these matches come from.
 
     Empty if the buyer has no accepted order whose delivery period covers all
     time_steps.
@@ -198,7 +230,8 @@ def find_seller_shares(
     ).fetchall()
 
     seller_volumes: dict[str, float] = {}
-    for _, _, start_time, end_time, matches in rows:
+    market_periods: set[tuple[str, str]] = set()
+    for market_id, _, start_time, end_time, matches in rows:
         try:
             is_covered = datetime.fromisoformat(
                 start_time
@@ -208,20 +241,31 @@ def find_seller_shares(
             is_covered = False
         if not is_covered:
             continue
+        market_periods.add((market_id, start_time))
         for match in json.loads(matches):
             seller = match["blockchain_address"]
             seller_volumes[seller] = seller_volumes.get(seller, 0) + match["volume"]
 
     total_volume = sum(seller_volumes.values())
-    return {seller: volume / total_volume for seller, volume in seller_volumes.items()}
+    seller_shares = {
+        seller: volume / total_volume for seller, volume in seller_volumes.items()
+    }
+    return seller_shares, market_periods
 
 
 def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[dict]:
     """Schedules assigned to the seller that it has not validly reported yet,
-    each scaled to the seller's share."""
+    each scaled to the seller's share.
+
+    Real-world schedules whose last time step is over are left out; simulated ones
+    lie in the past on purpose and stay until they are reported.
+    """
     assignments = conn.execute(
         """
-        SELECT a.request_id, a.share
+        SELECT a.request_id, a.share, (
+            SELECT MAX(r.is_real_world_test) FROM requested_aggregated_schedules r
+            WHERE r.request_id = a.request_id
+        )
         FROM power_request_assignments a
         WHERE a.seller_blockchain_address = ?
           AND NOT EXISTS (
@@ -235,11 +279,20 @@ def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[di
     ).fetchall()
 
     open_schedules = []
-    for request_id, share in assignments:
+    for request_id, share, is_real_world_test in assignments:
         schedule = read_requested_schedule(conn, request_id)
         # completely replaced by a newer request of the buyer
         if schedule.empty:
             continue
+        if is_real_world_test:
+            last_step = datetime.fromisoformat(schedule["time_steps"].iloc[-1])
+            now = (
+                datetime.now(tz=last_step.tzinfo)
+                if last_step.tzinfo
+                else datetime.now()
+            )
+            if last_step + TIME_STEP <= now:
+                continue
         open_schedules.append(
             {
                 "request_id": request_id,
@@ -362,12 +415,32 @@ def write_market_results_to_db(
 
     A result for a market and delivery period that is already stored (e.g. from a
     re-run of the simulation) replaces the stored one, also if the new result has
-    no accepted orders.
+    no accepted orders. The power requests assigned from the old result are deleted
+    with it, since their assignment is outdated.
     """
     received_at = datetime.now(timezone.utc).isoformat()
+    market_period = (payload.market_id, canonical_time_steps([payload.start_time])[0])
+
+    outdated_requests = """
+        SELECT request_id FROM power_request_market_periods
+        WHERE market_id = ? AND start_time = ?
+    """
+    for table in ("requested_aggregated_schedules", "power_request_assignments"):
+        conn.execute(
+            f"DELETE FROM {table} WHERE request_id IN ({outdated_requests})",
+            market_period,
+        )
+    conn.execute(
+        """
+        DELETE FROM power_request_market_periods
+        WHERE request_id IN (SELECT request_id FROM power_request_market_periods
+                             WHERE market_id = ? AND start_time = ?)
+        """,
+        market_period,
+    )
     conn.execute(
         "DELETE FROM market_results WHERE market_id = ? AND start_time = ?",
-        (payload.market_id, canonical_time_steps([payload.start_time])[0]),
+        market_period,
     )
     conn.executemany(
         """
