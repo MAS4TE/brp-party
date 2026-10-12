@@ -34,7 +34,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-API_PASSWORD = os.getenv("API_PASSWORD")
+POWER_REQUEST_PASSWORD = os.getenv("POWER_REQUEST_PASSWORD")
 # only ASSUME may send market results, so it gets its own password
 MARKET_RESULTS_PASSWORD = os.getenv("MARKET_RESULTS_PASSWORD")
 
@@ -42,7 +42,7 @@ DB_PATH = os.getenv("DB_PATH")
 
 util.require_env_vars(
     [
-        ("API_PASSWORD", API_PASSWORD),
+        ("API_PASSWORD", POWER_REQUEST_PASSWORD),
         ("MARKET_RESULTS_PASSWORD", MARKET_RESULTS_PASSWORD),
         ("DB_PATH", DB_PATH),
     ]
@@ -68,14 +68,14 @@ security = HTTPBasic()
 def verify_password(
     credentials: Annotated[HTTPBasicCredentials, Depends(security)],
 ) -> str:
-    if not API_PASSWORD:
+    if not POWER_REQUEST_PASSWORD:
         logger.error("API_PASSWORD env var is not configured")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="API_PASSWORD env var is not configured.",
         )
     if not secrets.compare_digest(
-        credentials.password.encode("utf-8"), API_PASSWORD.encode("utf-8")
+        credentials.password.encode("utf-8"), POWER_REQUEST_PASSWORD.encode("utf-8")
     ):
         logger.warning("Invalid credentials for user '%s'", credentials.username)
         raise HTTPException(
