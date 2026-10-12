@@ -11,7 +11,7 @@ FastAPI service under `./api/` with four endpoints:
 - `POST /power_request` — accepts up to four timeseries of a buyer, validates them, sums
   them element-wise, assigns the result to the sellers the buyer was matched with in the
   market, and persists it to SQLite.
-- `GET /power_requests` — polled by the sellers: their share of every schedule they still
+- `GET /power_request` — polled by the sellers: their share of every schedule they still
   have to fulfil.
 - `POST /actual_schedule` — accepts the schedule actually driven by a seller,
   validates it against its share of the stored request, persists it, and returns the
@@ -88,7 +88,7 @@ At least one series must be present. Each provided series must have the same len
 }
 ```
 
-The same `request_id` is handed out to the assigned sellers by `GET /power_requests` and is
+The same `request_id` is handed out to the assigned sellers by `GET /power_request` and is
 the key they report back to `POST /actual_schedule`. Keep it if you want to correlate a
 request with the schedule that was actually driven.
 
@@ -124,7 +124,7 @@ The schedule is assigned from the market results stored by `POST /market_results
 A new request replaces the buyer's earlier requests (same `blockchain_address`) where they
 overlap: their `time_steps` that the new request also covers are deleted, the other
 `time_steps` stay. A request that loses all its `time_steps` this way is no longer handed out
-by `GET /power_requests`. With `is_real_world_test=true`, the checks above run first, so only
+by `GET /power_request`. With `is_real_world_test=true`, the checks above run first, so only
 `time_steps` more than 15 minutes in the future can be replaced.
 
 Overlap is detected on equal timestamps in canonical form, so requests on the same
@@ -218,7 +218,7 @@ curl -u brp:secret \
   -d @payload.json
 ```
 
-## Endpoint: `GET /power_requests`
+## Endpoint: `GET /power_request`
 
 Polled by the sellers (e.g. every 30 s) to learn which schedules they have to fulfil.
 
@@ -251,7 +251,7 @@ Polled by the sellers (e.g. every 30 s) to learn which schedules they have to fu
 | `500` | SQLite read failed |
 
 ```bash
-curl -u seller:secret "http://localhost:8000/power_requests?blockchain_address=0x..."
+curl -u seller:secret "http://localhost:8000/power_request?blockchain_address=0x..."
 ```
 
 ## Endpoint: `POST /actual_schedule`
@@ -276,7 +276,7 @@ result synchronously.
 }
 ```
 
-`request_id` must be one handed out to this seller by `GET /power_requests`, and
+`request_id` must be one handed out to this seller by `GET /power_request`, and
 `time_steps` must denote the same instants as the stored ones.
 
 The comparison is made on the canonical form described above, not on the raw text, so any

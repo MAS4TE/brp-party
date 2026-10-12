@@ -202,7 +202,7 @@ def power_request(
     return PowerRequestResponse(request_id=request_id)
 
 
-@app.get("/power_requests", status_code=status.HTTP_200_OK)
+@app.get("/power_request", status_code=status.HTTP_200_OK)
 def power_requests(
     blockchain_address: str,
     user: Annotated[str, Depends(verify_password)],

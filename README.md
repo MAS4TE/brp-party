@@ -26,7 +26,7 @@ Single FastAPI service for BRP schedule handling.
    service validates and aggregates it, assigns it to the sellers the buyer was matched with
    (share by matched volume; rejected if the buyer has no awarded storage for the period),
    persists it to SQLite, and returns the `request_id` it assigned.
-3. The sellers poll `GET /power_requests` (e.g. every 30 s) with their blockchain address and
+3. The sellers poll `GET /power_request` (e.g. every 30 s) with their blockchain address and
    get their share of every schedule they still have to fulfil.
 4. A seller drives its share and reports the actually driven schedule back to
    `POST /actual_schedule`. The service validates it against its share of the stored request
