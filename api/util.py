@@ -129,9 +129,28 @@ def write_requested_aggregated_schedule_to_db(
     blockchain_address: str,
     seller_shares: dict[str, float],
 ) -> None:
-    """Store the requested schedule and which seller fulfils which share of it."""
+    """Store the requested schedule and which seller fulfils which share of it.
+
+    The new schedule replaces the buyer's older requests where they overlap: their
+    time_steps that the new one also covers are deleted, the others stay.
+    """
     requested_at = datetime.now(timezone.utc).isoformat()
     cur = conn.cursor()
+    time_steps = df["time_steps"].tolist()
+    cur.execute(
+        f"""
+        DELETE FROM requested_aggregated_schedules
+        WHERE blockchain_address = ?
+          AND time_steps IN ({", ".join("?" * len(time_steps))})
+        """,
+        (blockchain_address, *time_steps),
+    )
+    if cur.rowcount:
+        logger.info(
+            "New power request of blockchain_address=%s replaces %d time steps of older requests",
+            blockchain_address,
+            cur.rowcount,
+        )
     cur.executemany(
         """
         INSERT INTO requested_aggregated_schedules
@@ -218,6 +237,9 @@ def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[di
     open_schedules = []
     for request_id, share in assignments:
         schedule = read_requested_schedule(conn, request_id)
+        # completely replaced by a newer request of the buyer
+        if schedule.empty:
+            continue
         open_schedules.append(
             {
                 "request_id": request_id,

@@ -115,6 +115,17 @@ The schedule is assigned from the market results stored by `POST /market_results
 - Every seller in the `matches` of these orders gets a share of the schedule proportional
   to its matched volume (e.g. 0.5 and 1.5 matched → 25 % and 75 %).
 
+### Replacing an earlier request
+
+A new request replaces the buyer's earlier requests (same `blockchain_address`) where they
+overlap: their `time_steps` that the new request also covers are deleted, the other
+`time_steps` stay. A request that loses all its `time_steps` this way is no longer handed out
+by `GET /power_requests`. With `is_real_world_test=true`, the checks above run first, so only
+`time_steps` more than 15 minutes in the future can be replaced.
+
+Overlap is detected on equal timestamps in canonical form, so requests on the same
+quarter-hour grid and in the same timezone form (both naive or both with offset) are needed.
+
 ### SQLite persistence
 
 On success, each timestep is stored as one row in the table `requested_aggregated_schedules`
