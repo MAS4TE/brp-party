@@ -379,6 +379,9 @@ Each accepted order is stored as one row in the table `market_results` (`market_
 `accepted_price`, `matches` as JSON, `received_at`). `start_time`/`end_time` use the
 canonical timestamp form described above.
 
+A result for a `market_id` and `start_time` that is already stored (e.g. from a re-run of
+the simulation) is replaced, not added to. Delete and insert happen in one transaction.
+
 ### Error responses
 
 | Status | When |

@@ -169,10 +169,9 @@ def find_seller_shares(
     first_step = datetime.fromisoformat(time_steps[0])
     last_step_end = datetime.fromisoformat(time_steps[-1]) + TIME_STEP
 
-    # DISTINCT, so market results that were sent twice are not counted twice
     rows = conn.execute(
         """
-        SELECT DISTINCT market_id, bid_id, start_time, end_time, matches
+        SELECT market_id, bid_id, start_time, end_time, matches
         FROM market_results
         WHERE blockchain_address = ? AND accepted_volume < 0
         """,
@@ -337,8 +336,19 @@ def create_market_results_table(conn: sqlite3.Connection) -> None:
 def write_market_results_to_db(
     conn: sqlite3.Connection, payload: MarketResultsPayload
 ) -> None:
-    """Store one row per accepted order; the counterparties are kept as JSON."""
+    """Store one row per accepted order; the counterparties are kept as JSON.
+
+    A result for a market and delivery period that is already stored (e.g. from a
+    re-run of the simulation) replaces the stored one.
+    """
     received_at = datetime.now(timezone.utc).isoformat()
+    start_times = {
+        canonical_time_steps([order.start_time])[0] for order in payload.orders
+    }
+    conn.executemany(
+        "DELETE FROM market_results WHERE market_id = ? AND start_time = ?",
+        [(payload.market_id, start_time) for start_time in start_times],
+    )
     conn.executemany(
         """
         INSERT INTO market_results
