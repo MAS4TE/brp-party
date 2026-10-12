@@ -344,7 +344,9 @@ Sent by ASSUME after every clearing of the battery market. Tells the service who
 awarded how much, for which delivery period, and with which counterparties.
 
 - **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
-- **Body:** `market_id` and the list of accepted `orders`. Rejected orders are not sent.
+- **Body:** `market_id`, the delivery period of the cleared product (`start_time`,
+  `end_time`), and the list of accepted `orders`. Rejected orders are not sent; the list is
+  empty if nothing was traded.
 - **Response:** `200 OK` with the number of stored orders.
 
 ### Request body schema
@@ -352,6 +354,8 @@ awarded how much, for which delivery period, and with which counterparties.
 ```json
 {
   "market_id": "BatteryMarket",
+  "start_time": "2023-05-09T01:00:00",
+  "end_time": "2023-05-16T01:00:00",
   "orders": [
     {
       "bid_id": "B_01_1",
@@ -390,8 +394,9 @@ Each accepted order is stored as one row in the table `market_results` (`market_
 `accepted_price`, `matches` as JSON, `received_at`). `start_time`/`end_time` use the
 canonical timestamp form described above.
 
-A result for a `market_id` and `start_time` that is already stored (e.g. from a re-run of
-the simulation) is replaced, not added to. Delete and insert happen in one transaction.
+A result for a `market_id` and delivery `start_time` that is already stored (e.g. from a
+re-run of the simulation) is replaced, not added to, also if the new result has no accepted
+orders. Delete and insert happen in one transaction.
 
 ### Error responses
 

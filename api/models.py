@@ -140,4 +140,7 @@ class MarketResultsPayload(BaseModel):
     """Accepted orders of one market clearing, sent by ASSUME."""
 
     market_id: str
+    # delivery period of the cleared product, also sent if no order was accepted
+    start_time: datetime
+    end_time: datetime
     orders: list[MarketResultOrder]

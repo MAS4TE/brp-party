@@ -361,15 +361,13 @@ def write_market_results_to_db(
     """Store one row per accepted order; the counterparties are kept as JSON.
 
     A result for a market and delivery period that is already stored (e.g. from a
-    re-run of the simulation) replaces the stored one.
+    re-run of the simulation) replaces the stored one, also if the new result has
+    no accepted orders.
     """
     received_at = datetime.now(timezone.utc).isoformat()
-    start_times = {
-        canonical_time_steps([order.start_time])[0] for order in payload.orders
-    }
-    conn.executemany(
+    conn.execute(
         "DELETE FROM market_results WHERE market_id = ? AND start_time = ?",
-        [(payload.market_id, start_time) for start_time in start_times],
+        (payload.market_id, canonical_time_steps([payload.start_time])[0]),
     )
     conn.executemany(
         """
