@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 import sqlite3
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import pandas as pd
 
@@ -42,7 +42,7 @@ DB_PATH = os.getenv("DB_PATH")
 
 util.require_env_vars(
     [
-        ("API_PASSWORD", POWER_REQUEST_PASSWORD),
+        ("POWER_REQUEST_PASSWORD", POWER_REQUEST_PASSWORD),
         ("MARKET_RESULTS_PASSWORD", MARKET_RESULTS_PASSWORD),
         ("DB_PATH", DB_PATH),
     ]
@@ -69,10 +69,10 @@ def verify_password(
     credentials: Annotated[HTTPBasicCredentials, Depends(security)],
 ) -> str:
     if not POWER_REQUEST_PASSWORD:
-        logger.error("API_PASSWORD env var is not configured")
+        logger.error("POWER_REQUEST_PASSWORD env var is not configured")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="API_PASSWORD env var is not configured.",
+            detail="POWER_REQUEST_PASSWORD env var is not configured.",
         )
     if not secrets.compare_digest(
         credentials.password.encode("utf-8"), POWER_REQUEST_PASSWORD.encode("utf-8")
@@ -84,26 +84,6 @@ def verify_password(
             headers={"WWW-Authenticate": "Basic"},
         )
     logger.info("Authenticated request for user '%s'", credentials.username)
-    return credentials.username
-
-
-def verify_market_results_password(
-    credentials: Annotated[HTTPBasicCredentials, Depends(security)],
-) -> str:
-    if not secrets.compare_digest(
-        credentials.password.encode("utf-8"), MARKET_RESULTS_PASSWORD.encode("utf-8")
-    ):
-        logger.warning(
-            "Invalid market results credentials for user '%s'", credentials.username
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials.",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    logger.info(
-        "Authenticated market results request for user '%s'", credentials.username
-    )
     return credentials.username
 
 
@@ -261,13 +241,23 @@ def actual_schedule(
 @app.post("/market_results", status_code=status.HTTP_200_OK)
 def market_results(
     payload: MarketResultsPayload,
-    user: Annotated[str, Depends(verify_market_results_password)],
+    x_market_results_password: Annotated[str | None, Header()] = None,
 ):
+    # only ASSUME knows this password; no username needed
+    if x_market_results_password is None or not secrets.compare_digest(
+        x_market_results_password.encode("utf-8"),
+        MARKET_RESULTS_PASSWORD.encode("utf-8"),
+    ):
+        logger.warning("Invalid market results password")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials.",
+        )
+
     logger.info(
-        "Received %d accepted orders of market '%s' from user '%s'",
+        "Received %d accepted orders of market '%s'",
         len(payload.orders),
         payload.market_id,
-        user,
     )
 
     conn = sqlite3.connect(DB_PATH)

@@ -45,7 +45,7 @@ Optional: create a `.env` file in the repository root (loaded via `python-dotenv
 ## Run
 
 ```bash
-export API_PASSWORD=secret
+export POWER_REQUEST_PASSWORD=secret
 export MARKET_RESULTS_PASSWORD=other-secret
 export DB_PATH=database.db
 

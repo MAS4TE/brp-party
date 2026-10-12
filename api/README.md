@@ -34,8 +34,8 @@ Optional: create a `.env` file in the repository root (loaded via `python-dotenv
 
 | Variable | Required | Purpose |
 | -------- | -------- | ------- |
-| `API_PASSWORD` | yes | Password for HTTP Basic Auth of buyers and sellers |
-| `MARKET_RESULTS_PASSWORD` | yes | Password for HTTP Basic Auth of ASSUME at `POST /market_results` |
+| `POWER_REQUEST_PASSWORD` | yes | Password for HTTP Basic Auth of buyers and sellers |
+| `MARKET_RESULTS_PASSWORD` | yes | Password ASSUME sends in the header `X-Market-Results-Password` to `POST /market_results` |
 | `DB_PATH` | yes | SQLite database file |
 
 [`example.env`](../example.env) lists them; copy it to `.env` in the repository root.
@@ -45,7 +45,7 @@ Optional: create a `.env` file in the repository root (loaded via `python-dotenv
 From the repository root:
 
 ```bash
-export API_PASSWORD=secret
+export POWER_REQUEST_PASSWORD=secret
 export MARKET_RESULTS_PASSWORD=other-secret
 export DB_PATH=database.db
 
@@ -56,7 +56,7 @@ Interactive API docs: `http://localhost:8000/docs`
 
 ## Endpoint: `POST /power_request`
 
-- **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
+- **Authentication:** HTTP Basic Auth (username is ignored; password must match `POWER_REQUEST_PASSWORD`).
 - **Body:** the buyer's `blockchain_address`, 1–4 optional series (`eeg`, `wholesale`,
   `community`, `home`) plus `time_steps`.
 - **Query parameter:** `is_real_world_test` (boolean, default `false`). When `true`, additional checks apply (see below).
@@ -160,7 +160,7 @@ lexicographically also sorts them chronologically.
 | ------ | ---- |
 | `401` | Invalid HTTP Basic password |
 | `422` | Validation failed (body or `is_real_world_test` rules), or no awarded storage for the buyer in the period of the schedule |
-| `500` | `API_PASSWORD` not configured, or SQLite read/persist failed |
+| `500` | `POWER_REQUEST_PASSWORD` not configured, or SQLite read/persist failed |
 
 ## Example: build a request with pandas
 
@@ -222,7 +222,7 @@ curl -u brp:secret \
 
 Polled by the sellers (e.g. every 30 s) to learn which schedules they have to fulfil.
 
-- **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
+- **Authentication:** HTTP Basic Auth (username is ignored; password must match `POWER_REQUEST_PASSWORD`).
 - **Query parameter:** `blockchain_address` of the seller.
 - **Response:** `200 OK` with a list of every schedule assigned to the seller that it has not
   yet validly reported via `POST /actual_schedule`. The same schedule is returned on every
@@ -261,7 +261,7 @@ actually driven schedule against the seller's share of the original request (mat
 `request_id` and the seller's `blockchain_address`), stores it, and returns the validation
 result synchronously.
 
-- **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
+- **Authentication:** HTTP Basic Auth (username is ignored; password must match `POWER_REQUEST_PASSWORD`).
 - **Body:** `request_id`, the seller's `blockchain_address`, `time_steps`, and `power_rate_w` (equal lengths).
 - **Response:** `200 OK` with the validation result as JSON.
 
@@ -353,7 +353,7 @@ curl -u bob:secret \
 Sent by ASSUME after every clearing of the battery market. Tells the service who was
 awarded how much, for which delivery period, and with which counterparties.
 
-- **Authentication:** HTTP Basic Auth (username is ignored; password must match `MARKET_RESULTS_PASSWORD`).
+- **Authentication:** header `X-Market-Results-Password` must match `MARKET_RESULTS_PASSWORD` (no username, no HTTP Basic Auth).
 - **Body:** `market_id`, the delivery period of the cleared product (`start_time`,
   `end_time`), and the list of accepted `orders`. Rejected orders are not sent; the list is
   empty if nothing was traded.
@@ -414,6 +414,6 @@ one transaction.
 
 | Status | When |
 | ------ | ---- |
-| `401` | Invalid HTTP Basic password |
+| `401` | Missing or invalid `X-Market-Results-Password` |
 | `422` | Body does not match the schema |
 | `500` | SQLite persist failed |
