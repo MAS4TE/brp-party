@@ -12,7 +12,13 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from models import SERIES_NAMES, TIME_STEP, ActualSchedulePayload, TimeseriesPayload
+from models import (
+    SERIES_NAMES,
+    TIME_STEP,
+    ActualSchedulePayload,
+    MarketResultsPayload,
+    TimeseriesPayload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +189,54 @@ def write_invalid_actual_schedule_to_db(
         VALUES (?, NULL, NULL, NULL, ?, 0, ?)
         """,
         (request_id, received_at, json.dumps(errors)),
+    )
+    conn.commit()
+
+
+def create_market_results_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_results (
+            market_id TEXT,
+            bid_id TEXT,
+            unit_id TEXT,
+            blockchain_address TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            accepted_volume REAL,
+            accepted_price REAL,
+            matches TEXT,
+            received_at TEXT
+        )
+    """)
+    conn.commit()
+
+
+def write_market_results_to_db(
+    conn: sqlite3.Connection, payload: MarketResultsPayload
+) -> None:
+    """Store one row per accepted order; the counterparties are kept as JSON."""
+    received_at = datetime.now(timezone.utc).isoformat()
+    conn.executemany(
+        """
+        INSERT INTO market_results
+        (market_id, bid_id, unit_id, blockchain_address, start_time, end_time,
+         accepted_volume, accepted_price, matches, received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                payload.market_id,
+                order.bid_id,
+                order.unit_id,
+                order.blockchain_address,
+                *canonical_time_steps([order.start_time, order.end_time]),
+                order.accepted_volume,
+                order.accepted_price,
+                json.dumps([match.model_dump() for match in order.matches]),
+                received_at,
+            )
+            for order in payload.orders
+        ],
     )
     conn.commit()
 

@@ -108,3 +108,32 @@ class ActualSchedulePayload(BaseModel):
                 f"time_steps length ({len(time_steps)})."
             )
         return value
+
+
+class MarketResultMatch(BaseModel):
+    """Counterparty an accepted order was matched with in the market clearing."""
+
+    bid_id: str
+    blockchain_address: str
+    volume: FiniteFloat
+    price: FiniteFloat
+
+
+class MarketResultOrder(BaseModel):
+    """One accepted order of the market, with the counterparties it trades with."""
+
+    bid_id: str
+    unit_id: str
+    blockchain_address: str
+    start_time: datetime
+    end_time: datetime
+    accepted_volume: FiniteFloat
+    accepted_price: FiniteFloat
+    matches: list[MarketResultMatch]
+
+
+class MarketResultsPayload(BaseModel):
+    """Accepted orders of one market clearing, sent by ASSUME."""
+
+    market_id: str
+    orders: list[MarketResultOrder]

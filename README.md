@@ -25,6 +25,9 @@ Single FastAPI service for BRP schedule handling.
 2. Bob drives the schedule and reports the actually driven schedule back to
    `POST /actual_schedule`. The service validates it against the stored request and
    returns the validation result synchronously (no MQTT round-trip).
+3. After each market clearing, ASSUME sends the accepted orders, including the
+   counterparties and their blockchain addresses, to `POST /market_results`. The service
+   stores them, so it knows who was awarded how much and with whom.
 
 ## Setup
 

@@ -26,6 +26,7 @@ import util
 from models import (
     TimeseriesPayload,
     ActualSchedulePayload,
+    MarketResultsPayload,
     PowerRequestResponse,
     SERIES_NAMES,
 )
@@ -63,6 +64,7 @@ async def lifespan(app: FastAPI):
     conn = sqlite3.connect(DB_PATH)
     util.create_table(conn)
     util.create_actual_schedules_table(conn)
+    util.create_market_results_table(conn)
     conn.close()
     yield
 
@@ -212,3 +214,32 @@ def actual_schedule(
         result["valid"],
     )
     return result
+
+
+@app.post("/market_results", status_code=status.HTTP_200_OK)
+def market_results(
+    payload: MarketResultsPayload,
+    user: Annotated[str, Depends(verify_password)],
+):
+    logger.info(
+        "Received %d accepted orders of market '%s' from user '%s'",
+        len(payload.orders),
+        payload.market_id,
+        user,
+    )
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        util.write_market_results_to_db(conn, payload)
+    except Exception as e:
+        logger.error(
+            "Could not persist market results of market '%s': %s",
+            payload.market_id,
+            e,
+        )
+        conn.rollback()
+        raise HTTPException(status_code=500) from e
+    finally:
+        conn.close()
+
+    return {"market_id": payload.market_id, "stored_orders": len(payload.orders)}

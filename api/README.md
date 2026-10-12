@@ -6,12 +6,14 @@ SPDX-License-Identifier: MIT
 
 # api
 
-FastAPI service under `./api/` with two endpoints:
+FastAPI service under `./api/` with three endpoints:
 
 - `POST /power_request` — accepts up to four timeseries, validates them, sums them
   element-wise, persists the aggregated result to SQLite, and publishes it to MQTT over TLS.
 - `POST /actual_schedule` — accepts the schedule actually driven by the fulfiller,
   validates it against the stored request, persists it, and returns the validation result.
+- `POST /market_results` — accepts the accepted orders of a market clearing from ASSUME
+  and persists them, including the matched counterparties.
 
 ## Installation
 
@@ -295,3 +297,63 @@ curl -u bob:secret \
     "power_rate_w": [20.0, 980.0]
   }'
 ```
+
+## Endpoint: `POST /market_results`
+
+Sent by ASSUME after every clearing of the battery market. Tells the service who was
+awarded how much, for which delivery period, and with which counterparties.
+
+- **Authentication:** HTTP Basic Auth (username is ignored; password must match `API_PASSWORD`).
+- **Body:** `market_id` and the list of accepted `orders`. Rejected orders are not sent.
+- **Response:** `200 OK` with the number of stored orders.
+
+### Request body schema
+
+```json
+{
+  "market_id": "BatteryMarket",
+  "orders": [
+    {
+      "bid_id": "B_01_1",
+      "unit_id": "B_01",
+      "blockchain_address": "0x...",
+      "start_time": "2023-05-09T01:00:00",
+      "end_time": "2023-05-16T01:00:00",
+      "accepted_volume": -2.0,
+      "accepted_price": 0.15,
+      "matches": [
+        {"bid_id": "S_01_1", "blockchain_address": "0x...", "volume": 0.5, "price": 0.15},
+        {"bid_id": "S_02_1", "blockchain_address": "0x...", "volume": 1.5, "price": 0.15}
+      ]
+    }
+  ]
+}
+```
+
+`accepted_volume` is positive for sellers (storage providers) and negative for buyers.
+`matches` lists the counterparties of the order with the matched (positive) volume and the
+uniform clearing price.
+
+### Response
+
+```json
+{
+  "market_id": "BatteryMarket",
+  "stored_orders": 1
+}
+```
+
+### SQLite persistence
+
+Each accepted order is stored as one row in the table `market_results` (`market_id`,
+`bid_id`, `unit_id`, `blockchain_address`, `start_time`, `end_time`, `accepted_volume`,
+`accepted_price`, `matches` as JSON, `received_at`). `start_time`/`end_time` use the
+canonical timestamp form described above.
+
+### Error responses
+
+| Status | When |
+| ------ | ---- |
+| `401` | Invalid HTTP Basic password |
+| `422` | Body does not match the schema |
+| `500` | SQLite persist failed |
