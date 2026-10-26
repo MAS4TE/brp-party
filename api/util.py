@@ -458,7 +458,7 @@ def write_market_results_to_db(
                 *canonical_time_steps([order.start_time, order.end_time]),
                 order.accepted_volume,
                 order.accepted_price,
-                json.dumps([match.model_dump() for match in order.matches]),
+                json.dumps([match.model_dump(mode="json") for match in order.matches]),
                 received_at,
             )
             for order in payload.orders

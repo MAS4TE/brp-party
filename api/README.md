@@ -376,8 +376,8 @@ awarded how much, for which delivery period, and with which counterparties.
       "accepted_volume": -2.0,
       "accepted_price": 0.15,
       "matches": [
-        {"bid_id": "S_01_1", "blockchain_address": "0x...", "volume": 0.5, "price": 0.15},
-        {"bid_id": "S_02_1", "blockchain_address": "0x...", "volume": 1.5, "price": 0.15}
+        {"trade_id": "0b6f5c1e-8a4d-4e7b-9f3a-2c1d5e6a7b80", "bid_id": "S_01_1", "blockchain_address": "0x...", "volume": 0.5, "price": 0.15},
+        {"trade_id": "7d2e9a14-3b5c-4f60-8a1e-9c4b2d7f1a35", "bid_id": "S_02_1", "blockchain_address": "0x...", "volume": 1.5, "price": 0.15}
       ]
     }
   ]
@@ -386,7 +386,8 @@ awarded how much, for which delivery period, and with which counterparties.
 
 `accepted_volume` is positive for sellers (storage providers) and negative for buyers.
 `matches` lists the counterparties of the order with the matched (positive) volume and the
-uniform clearing price.
+uniform clearing price. Each match is one trade and carries a `trade_id` (UUID); buyer and
+seller of the same trade receive the same `trade_id`.
 
 ### Response
 

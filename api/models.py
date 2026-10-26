@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 from datetime import datetime, timedelta
+from uuid import UUID
 from pydantic import (
     BaseModel,
     FiniteFloat,
@@ -117,6 +118,8 @@ class ActualSchedulePayload(BaseModel):
 class MarketResultMatch(BaseModel):
     """Counterparty an accepted order was matched with in the market clearing."""
 
+    # identical for buyer and seller of the same trade
+    trade_id: UUID
     bid_id: str
     blockchain_address: str
     volume: FiniteFloat
