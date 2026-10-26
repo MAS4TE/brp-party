@@ -9,6 +9,7 @@ import logging
 import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
+from itertools import accumulate
 
 import pandas as pd
 
@@ -21,6 +22,10 @@ from models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# relative slack for the storage limits, so float rounding does not reject a schedule
+# that sits exactly on the limit
+LIMIT_TOLERANCE = 1e-9
 
 
 def require_env_vars(name_value_pairs: list[tuple[str, str | None]]) -> None:
@@ -124,6 +129,9 @@ def create_table(conn: sqlite3.Connection) -> None:
         )
     """)
     _ensure_column(conn, "power_request_assignments", "trade_ids", "TEXT")
+    # what the seller's trades allow it to store: capacity and charge/discharge power
+    _ensure_column(conn, "power_request_assignments", "volume_kwh", "REAL")
+    _ensure_column(conn, "power_request_assignments", "max_power_w", "REAL")
     # market periods whose results a request was assigned from
     conn.execute("""
         CREATE TABLE IF NOT EXISTS power_request_market_periods (
@@ -140,7 +148,7 @@ def write_requested_aggregated_schedule_to_db(
     df: pd.DataFrame,
     blockchain_address: str,
     seller_shares: dict[str, float],
-    seller_trades: dict[str, dict[str, float]],
+    seller_trades: dict[str, dict[str, tuple[float, float]]],
     market_periods: set[tuple[str, str]],
     is_real_world_test: bool,
 ) -> None:
@@ -191,11 +199,17 @@ def write_requested_aggregated_schedule_to_db(
     cur.executemany(
         """
         INSERT INTO power_request_assignments
-        (request_id, seller_blockchain_address, share, trade_ids)
-        VALUES (?, ?, ?, ?)
+        (request_id, seller_blockchain_address, share, trade_ids, volume_kwh, max_power_w)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         [
-            (request_id, seller, share, json.dumps(sorted(seller_trades[seller])))
+            (
+                request_id,
+                seller,
+                share,
+                json.dumps(sorted(seller_trades[seller])),
+                *trade_limits(seller_trades[seller]),
+            )
             for seller, share in seller_shares.items()
         ],
     )
@@ -217,9 +231,12 @@ def find_seller_shares(
     buyer_address: str,
     time_steps: list[str],
     trade_ids: Sequence[str],
-) -> tuple[dict[str, float], dict[str, dict[str, float]], set[tuple[str, str]]]:
+) -> tuple[
+    dict[str, float], dict[str, dict[str, tuple[float, float]]], set[tuple[str, str]]
+]:
     """Sellers of the given trades, with the share of the schedule each of them
-    fulfils (by matched volume of these trades), the trades and volumes per seller,
+    fulfils (by matched volume of these trades), the trades per seller as
+    (volume in kWh, c_rate),
     and the market periods (market_id, start_time) the trades come from.
 
     Raises ValueError listing every trade that is unknown, is not a trade of this
@@ -230,16 +247,16 @@ def find_seller_shares(
 
     rows = conn.execute(
         """
-        SELECT market_id, start_time, end_time, matches
+        SELECT market_id, start_time, end_time, matches, COALESCE(c_rate, 1.0)
         FROM market_results
         WHERE blockchain_address = ? AND accepted_volume < 0
         """,
         (buyer_address,),
     ).fetchall()
 
-    # trade_id -> (seller, volume, market period, covers the schedule)
-    buyer_trades: dict[str, tuple[str, float, tuple[str, str], bool]] = {}
-    for market_id, start_time, end_time, matches in rows:
+    # trade_id -> (seller, volume, c_rate, market period, covers the schedule)
+    buyer_trades: dict[str, tuple[str, float, float, tuple[str, str], bool]] = {}
+    for market_id, start_time, end_time, matches, c_rate in rows:
         try:
             is_covered = datetime.fromisoformat(
                 start_time
@@ -252,12 +269,13 @@ def find_seller_shares(
                 buyer_trades[match["trade_id"]] = (
                     match["blockchain_address"],
                     match["volume"],
+                    c_rate,
                     (market_id, start_time),
                     is_covered,
                 )
 
     errors = []
-    seller_trades: dict[str, dict[str, float]] = {}
+    seller_trades: dict[str, dict[str, tuple[float, float]]] = {}
     market_periods: set[tuple[str, str]] = set()
     for trade_id in trade_ids:
         if trade_id not in buyer_trades:
@@ -266,25 +284,79 @@ def find_seller_shares(
                 f"blockchain_address {buyer_address!r}."
             )
             continue
-        seller, volume, market_period, is_covered = buyer_trades[trade_id]
+        seller, volume, c_rate, market_period, is_covered = buyer_trades[trade_id]
         if not is_covered:
             errors.append(
                 f"Delivery period of trade {trade_id!r} does not cover the schedule."
             )
             continue
-        seller_trades.setdefault(seller, {})[trade_id] = volume
+        seller_trades.setdefault(seller, {})[trade_id] = (volume, c_rate)
         market_periods.add(market_period)
     if errors:
         raise ValueError(" ".join(errors))
 
     seller_volumes = {
-        seller: sum(trades.values()) for seller, trades in seller_trades.items()
+        seller: trade_limits(trades)[0] for seller, trades in seller_trades.items()
     }
     total_volume = sum(seller_volumes.values())
     seller_shares = {
         seller: volume / total_volume for seller, volume in seller_volumes.items()
     }
     return seller_shares, seller_trades, market_periods
+
+
+def trade_limits(trades: dict[str, tuple[float, float]]) -> tuple[float, float]:
+    """Storage the trades allow: capacity (kWh) and maximum charge/discharge
+    power (W), which is the volume times the c_rate of each trade."""
+    volume_kwh = sum(volume for volume, _ in trades.values())
+    max_power_w = sum(volume * c_rate for volume, c_rate in trades.values()) * 1000
+    return volume_kwh, max_power_w
+
+
+def check_storage_limits(
+    power_rate_w: Sequence[float],
+    volume_kwh: float,
+    max_power_w: float,
+    must_end_empty: bool,
+) -> list[str]:
+    """Errors if the schedule stores more or faster than the awarded trades allow.
+
+    The storage is empty at the start of the schedule. Positive power charges,
+    negative power discharges. Charging losses are not considered.
+
+    - power: charging or discharging faster than ``max_power_w`` in any time step
+    - energy: the stored energy (cumulative power × 15 min) falls below empty or
+      exceeds ``volume_kwh`` in any time step
+    - end: with ``must_end_empty``, the storage has to be empty again at the end
+    """
+    errors = []
+    peak_w = max(abs(p) for p in power_rate_w)
+    if peak_w > max_power_w * (1 + LIMIT_TOLERANCE):
+        errors.append(
+            f"Power of {peak_w:.1f} W exceeds the maximum of {max_power_w:.1f} W "
+            f"allowed by the awarded volume and c_rate."
+        )
+    step_hours = TIME_STEP / timedelta(hours=1)
+    stored_wh = list(accumulate((p * step_hours for p in power_rate_w)))
+    capacity_wh = volume_kwh * 1000
+    # slack for float rounding, relative to the capacity
+    slack_wh = capacity_wh * LIMIT_TOLERANCE + 1e-6
+    if min(stored_wh) < -slack_wh:
+        errors.append(
+            f"Schedule discharges {-min(stored_wh) / 1000:.3f} kWh more than it "
+            f"has charged, the storage starts empty."
+        )
+    if max(stored_wh) > capacity_wh + slack_wh:
+        errors.append(
+            f"Stored energy of {max(stored_wh) / 1000:.3f} kWh exceeds the "
+            f"awarded {volume_kwh:.3f} kWh."
+        )
+    if must_end_empty and abs(stored_wh[-1]) > slack_wh:
+        errors.append(
+            f"Storage must be empty at the end of the schedule, but "
+            f"{stored_wh[-1] / 1000:.3f} kWh remain."
+        )
+    return errors
 
 
 def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[dict]:
@@ -440,6 +512,7 @@ def create_market_results_table(conn: sqlite3.Connection) -> None:
             received_at TEXT
         )
     """)
+    _ensure_column(conn, "market_results", "c_rate", "REAL")
     conn.commit()
 
 
@@ -481,8 +554,8 @@ def write_market_results_to_db(
         """
         INSERT INTO market_results
         (market_id, bid_id, unit_id, blockchain_address, start_time, end_time,
-         accepted_volume, accepted_price, matches, received_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         accepted_volume, accepted_price, matches, received_at, c_rate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -495,6 +568,7 @@ def write_market_results_to_db(
                 order.accepted_price,
                 json.dumps([match.model_dump(mode="json") for match in order.matches]),
                 received_at,
+                order.c_rate,
             )
             for order in payload.orders
         ],
@@ -569,7 +643,7 @@ def validate_actual_schedule(
     requested_schedule = read_requested_schedule(conn, request_id)
     share = conn.execute(
         """
-        SELECT share, trade_ids FROM power_request_assignments
+        SELECT share, trade_ids, volume_kwh, max_power_w FROM power_request_assignments
         WHERE request_id = ? AND seller_blockchain_address = ?
         """,
         (request_id, seller),
@@ -597,6 +671,15 @@ def validate_actual_schedule(
         errors.append(
             f"time_steps mismatch: expected {requested_schedule['time_steps'].tolist()}, "
             f"got {actual_schedule['time_steps'].tolist()}."
+        )
+
+    else:
+        # not more or faster than the seller's trades allow, whatever was requested;
+        # ending non-empty is not an error here, a shortfall shows as missing energy
+        errors.extend(
+            check_storage_limits(
+                payload.power_rate_w, share[2], share[3], must_end_empty=False
+            )
         )
 
     if errors:

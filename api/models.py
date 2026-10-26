@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import (
     BaseModel,
     FiniteFloat,
+    PositiveFloat,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -152,6 +153,8 @@ class MarketResultOrder(BaseModel):
     end_time: datetime
     accepted_volume: FiniteFloat
     accepted_price: FiniteFloat
+    # charge/discharge power in relation to the volume (1 kWh at c_rate 1 = 1 kW)
+    c_rate: PositiveFloat = 1.0
     matches: list[MarketResultMatch]
 
 

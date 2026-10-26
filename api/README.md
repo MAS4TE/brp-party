@@ -129,6 +129,26 @@ The schedule is assigned from the market results stored by `POST /market_results
   volume of **these** trades (e.g. 1 kWh and 3 kWh → 25 % and 75 %). Other trades of the
   buyer are not considered.
 
+### Storage limits
+
+A schedule must not store more or faster than the trades it is made up of allow. The
+storage is empty at the start of the schedule (positive power charges, negative power
+discharges). With `volume` the matched volume (kWh) and `c_rate` of the trade's order
+(1 kWh at c-rate 1 = 1 kW), summed over the trades:
+
+- **Power:** in no time step may the schedule charge or discharge faster than
+  `Σ volume × c_rate` (kW).
+- **Energy:** the stored energy (cumulative power × 15 min) may not fall below empty and
+  may not exceed `Σ volume` kWh in any time step.
+- **End:** the storage has to be empty again at the end of the schedule, i.e. the schedule
+  discharges exactly what it charged.
+
+Charging losses are not considered. Otherwise the request is rejected with `422` and
+nothing is stored. The `actual_schedule` of each seller is checked against the power and
+energy limits of its own trades (see below); it does not have to end empty, a shortfall
+shows up as missing energy. Limits are not checked across different requests of the same
+buyer, each starts and ends empty.
+
 ### Replacing an earlier request
 
 A new request replaces the buyer's earlier requests (same `blockchain_address`) where they
@@ -146,7 +166,7 @@ On success, each timestep is stored as one row in the table `requested_aggregate
 in the database at `DB_PATH` (long table: `request_id`, `time_steps`, `power_rate_w`,
 `requested_at` — UTC timestamp shared by all rows of the request, `blockchain_address` of
 the buyer, `is_real_world_test`). Each assigned seller gets one row in
-`power_request_assignments` (`request_id`, `seller_blockchain_address`, `share`, `trade_ids` as JSON list), and each
+`power_request_assignments` (`request_id`, `seller_blockchain_address`, `share`, `trade_ids` as JSON list, `volume_kwh` and `max_power_w` the seller's trades allow), and each
 market period the assignment is based on one row in `power_request_market_periods`
 (`request_id`, `market_id`, `start_time`). All are written in one transaction; if it fails,
 nothing is stored.
@@ -169,7 +189,7 @@ lexicographically also sorts them chronologically.
 | Status | When |
 | ------ | ---- |
 | `401` | Invalid HTTP Basic password |
-| `422` | Validation failed (body or `is_real_world_test` rules), or `trade_ids` unknown, not trades of the buyer, or not covering the period of the schedule |
+| `422` | Validation failed (body or `is_real_world_test` rules), or `trade_ids` unknown, not trades of the buyer, or not covering the period of the schedule, or the schedule exceeds the storage limits |
 | `500` | `POWER_REQUEST_PASSWORD` not configured, or SQLite read/persist failed |
 
 ## Example: build a request with pandas
@@ -314,7 +334,8 @@ On success:
 ```
 
 On business-validation failure (unknown `request_id`, request not assigned to this seller,
-`trade_ids` mismatch, `time_steps` mismatch) — still `200 OK`:
+`trade_ids` mismatch, `time_steps` mismatch, power or energy above what the seller's trades
+allow) — still `200 OK`:
 
 ```json
 {
@@ -335,7 +356,7 @@ outcome:
 
 - **Valid** (`time_steps` match the stored request): one row per timestep, with
   `time_steps`, `power_rate_w` (actual), and the per-timestep `missing_energy_wh`.
-- **Invalid** (unknown `request_id`, not assigned to this seller, `trade_ids` mismatch, `time_steps` mismatch): a single summary row with
+- **Invalid** (unknown `request_id`, not assigned to this seller, `trade_ids` mismatch, `time_steps` mismatch, storage limits exceeded): a single summary row with
   `time_steps`/`power_rate_w`/`missing_energy_wh` set to `NULL` and `validation_errors` filled in.
 
 All rows have `request_id`, `blockchain_address` of the seller, `received_at` (UTC timestamp
@@ -347,7 +368,7 @@ of this submission), and `valid`.
 | ------ | ---- |
 | `401` | Invalid HTTP Basic password |
 | `422` | Body does not match the schema (e.g. `power_rate_w`/`time_steps` length mismatch) |
-| `200` with `valid: false` | Unknown `request_id`, not assigned to this seller, `trade_ids` mismatch, `time_steps` mismatch, or an unparseable timestamp |
+| `200` with `valid: false` | Unknown `request_id`, not assigned to this seller, `trade_ids` mismatch, `time_steps` mismatch, storage limits exceeded, or an unparseable timestamp |
 | `500` | SQLite read/persist failed |
 
 ### curl example
@@ -391,6 +412,7 @@ awarded how much, for which delivery period, and with which counterparties.
       "end_time": "2023-05-16T01:00:00",
       "accepted_volume": -2.0,
       "accepted_price": 0.15,
+      "c_rate": 1,
       "matches": [
         {"trade_id": "0b6f5c1e-8a4d-4e7b-9f3a-2c1d5e6a7b80", "bid_id": "S_01_1", "blockchain_address": "0x...", "volume": 0.5, "price": 0.15},
         {"trade_id": "7d2e9a14-3b5c-4f60-8a1e-9c4b2d7f1a35", "bid_id": "S_02_1", "blockchain_address": "0x...", "volume": 1.5, "price": 0.15}
@@ -418,7 +440,7 @@ seller of the same trade receive the same `trade_id`.
 
 Each accepted order is stored as one row in the table `market_results` (`market_id`,
 `bid_id`, `unit_id`, `blockchain_address`, `start_time`, `end_time`, `accepted_volume`,
-`accepted_price`, `matches` as JSON, `received_at`). `start_time`/`end_time` use the
+`accepted_price`, `c_rate`, `matches` as JSON, `received_at`). `start_time`/`end_time` use the
 canonical timestamp form described above.
 
 A result for a `market_id` and delivery `start_time` that is already stored (e.g. from a

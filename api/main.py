@@ -155,6 +155,25 @@ def power_request(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
             )
 
+        # the buyer must not store more or faster than its trades allow
+        limit_errors = util.check_storage_limits(
+            power_rate_w,
+            *util.trade_limits(
+                {
+                    trade_id: trade
+                    for trades in seller_trades.values()
+                    for trade_id, trade in trades.items()
+                }
+            ),
+            must_end_empty=True,
+        )
+        if limit_errors:
+            logger.warning("Rejected power request: %s", " ".join(limit_errors))
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=" ".join(limit_errors),
+            )
+
         util.write_requested_aggregated_schedule_to_db(
             conn,
             database_df,
