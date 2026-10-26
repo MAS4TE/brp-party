@@ -17,14 +17,26 @@ SERIES_NAMES = ("eeg", "wholesale", "community", "home")
 TIME_STEP = timedelta(minutes=15)
 
 
+def _check_trade_ids(value: list[UUID]) -> list[UUID]:
+    if not value:
+        raise ValueError("trade_ids must contain at least one trade.")
+    if len(set(value)) != len(value):
+        raise ValueError("trade_ids must not contain duplicates.")
+    return value
+
+
 class TimeseriesPayload(BaseModel):
     # identifies the buyer; the schedule is assigned to the sellers it was matched with
     blockchain_address: str
+    # trades of the market clearing the schedule is made up of; their sellers share it
+    trade_ids: list[UUID]
     time_steps: list[datetime]
     eeg: None | list[FiniteFloat] = None
     wholesale: None | list[FiniteFloat] = None
     community: None | list[FiniteFloat] = None
     home: None | list[FiniteFloat] = None
+
+    _validate_trade_ids = field_validator("trade_ids")(_check_trade_ids)
 
     @field_validator("time_steps")
     @classmethod
@@ -98,8 +110,12 @@ class ActualSchedulePayload(BaseModel):
     request_id: str
     # identifies the seller; its share of the request is validated
     blockchain_address: str
+    # trades of this seller the request was assigned from
+    trade_ids: list[UUID]
     time_steps: list[str]
     power_rate_w: list[FiniteFloat]
+
+    _validate_trade_ids = field_validator("trade_ids")(_check_trade_ids)
 
     @field_validator("power_rate_w")
     @classmethod

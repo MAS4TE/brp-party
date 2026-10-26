@@ -22,9 +22,10 @@ Single FastAPI service for BRP schedule handling.
 1. After each market clearing, ASSUME sends the accepted orders, including the
    counterparties and their blockchain addresses, to `POST /market_results`. The service
    stores them, so it knows who was awarded how much and with whom.
-2. A buyer sends its schedule with its blockchain address to `POST /power_request`. The
-   service validates and aggregates it, assigns it to the sellers the buyer was matched with
-   (share by matched volume; rejected if the buyer has no awarded storage for the period),
+2. A buyer sends its schedule with its blockchain address and the `trade_ids` it is made up
+   of to `POST /power_request`. The service validates and aggregates it, assigns it to the
+   sellers of these trades (share by matched volume of these trades; rejected if a trade is
+   unknown, not the buyer's or does not cover the period),
    persists it to SQLite, and returns the `request_id` it assigned.
 3. The sellers poll `GET /power_request` (e.g. every 30 s) with their blockchain address and
    get their share of every schedule they still have to fulfil.

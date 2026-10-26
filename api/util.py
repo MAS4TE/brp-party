@@ -123,6 +123,7 @@ def create_table(conn: sqlite3.Connection) -> None:
             share REAL
         )
     """)
+    _ensure_column(conn, "power_request_assignments", "trade_ids", "TEXT")
     # market periods whose results a request was assigned from
     conn.execute("""
         CREATE TABLE IF NOT EXISTS power_request_market_periods (
@@ -139,11 +140,12 @@ def write_requested_aggregated_schedule_to_db(
     df: pd.DataFrame,
     blockchain_address: str,
     seller_shares: dict[str, float],
+    seller_trades: dict[str, dict[str, float]],
     market_periods: set[tuple[str, str]],
     is_real_world_test: bool,
 ) -> None:
-    """Store the requested schedule, which seller fulfils which share of it and the
-    market periods the assignment is based on.
+    """Store the requested schedule, which seller fulfils which share of it (and
+    from which trades) and the market periods the assignment is based on.
 
     The new schedule replaces the buyer's older requests where they overlap: their
     time_steps that the new one also covers are deleted, the others stay.
@@ -189,10 +191,13 @@ def write_requested_aggregated_schedule_to_db(
     cur.executemany(
         """
         INSERT INTO power_request_assignments
-        (request_id, seller_blockchain_address, share)
-        VALUES (?, ?, ?)
+        (request_id, seller_blockchain_address, share, trade_ids)
+        VALUES (?, ?, ?, ?)
         """,
-        [(request_id, seller, share) for seller, share in seller_shares.items()],
+        [
+            (request_id, seller, share, json.dumps(sorted(seller_trades[seller])))
+            for seller, share in seller_shares.items()
+        ],
     )
     cur.executemany(
         """
@@ -208,30 +213,33 @@ def write_requested_aggregated_schedule_to_db(
 
 
 def find_seller_shares(
-    conn: sqlite3.Connection, buyer_address: str, time_steps: list[str]
-) -> tuple[dict[str, float], set[tuple[str, str]]]:
-    """Sellers the buyer was matched with for the period of the schedule, with
-    the share of the schedule each of them fulfils (by matched volume), and the
-    market periods (market_id, start_time) these matches come from.
+    conn: sqlite3.Connection,
+    buyer_address: str,
+    time_steps: list[str],
+    trade_ids: Sequence[str],
+) -> tuple[dict[str, float], dict[str, dict[str, float]], set[tuple[str, str]]]:
+    """Sellers of the given trades, with the share of the schedule each of them
+    fulfils (by matched volume of these trades), the trades and volumes per seller,
+    and the market periods (market_id, start_time) the trades come from.
 
-    Empty if the buyer has no accepted order whose delivery period covers all
-    time_steps.
+    Raises ValueError listing every trade that is unknown, is not a trade of this
+    buyer, or whose delivery period does not cover all time_steps.
     """
     first_step = datetime.fromisoformat(time_steps[0])
     last_step_end = datetime.fromisoformat(time_steps[-1]) + TIME_STEP
 
     rows = conn.execute(
         """
-        SELECT market_id, bid_id, start_time, end_time, matches
+        SELECT market_id, start_time, end_time, matches
         FROM market_results
         WHERE blockchain_address = ? AND accepted_volume < 0
         """,
         (buyer_address,),
     ).fetchall()
 
-    seller_volumes: dict[str, float] = {}
-    market_periods: set[tuple[str, str]] = set()
-    for market_id, _, start_time, end_time, matches in rows:
+    # trade_id -> (seller, volume, market period, covers the schedule)
+    buyer_trades: dict[str, tuple[str, float, tuple[str, str], bool]] = {}
+    for market_id, start_time, end_time, matches in rows:
         try:
             is_covered = datetime.fromisoformat(
                 start_time
@@ -239,18 +247,44 @@ def find_seller_shares(
         except TypeError:
             # tz-aware schedule vs. tz-naive market result (or vice versa)
             is_covered = False
-        if not is_covered:
-            continue
-        market_periods.add((market_id, start_time))
         for match in json.loads(matches):
-            seller = match["blockchain_address"]
-            seller_volumes[seller] = seller_volumes.get(seller, 0) + match["volume"]
+            if "trade_id" in match:
+                buyer_trades[match["trade_id"]] = (
+                    match["blockchain_address"],
+                    match["volume"],
+                    (market_id, start_time),
+                    is_covered,
+                )
 
+    errors = []
+    seller_trades: dict[str, dict[str, float]] = {}
+    market_periods: set[tuple[str, str]] = set()
+    for trade_id in trade_ids:
+        if trade_id not in buyer_trades:
+            errors.append(
+                f"Trade {trade_id!r} is unknown or not a trade of "
+                f"blockchain_address {buyer_address!r}."
+            )
+            continue
+        seller, volume, market_period, is_covered = buyer_trades[trade_id]
+        if not is_covered:
+            errors.append(
+                f"Delivery period of trade {trade_id!r} does not cover the schedule."
+            )
+            continue
+        seller_trades.setdefault(seller, {})[trade_id] = volume
+        market_periods.add(market_period)
+    if errors:
+        raise ValueError(" ".join(errors))
+
+    seller_volumes = {
+        seller: sum(trades.values()) for seller, trades in seller_trades.items()
+    }
     total_volume = sum(seller_volumes.values())
     seller_shares = {
         seller: volume / total_volume for seller, volume in seller_volumes.items()
     }
-    return seller_shares, market_periods
+    return seller_shares, seller_trades, market_periods
 
 
 def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[dict]:
@@ -262,7 +296,7 @@ def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[di
     """
     assignments = conn.execute(
         """
-        SELECT a.request_id, a.share, (
+        SELECT a.request_id, a.share, a.trade_ids, (
             SELECT MAX(r.is_real_world_test) FROM requested_aggregated_schedules r
             WHERE r.request_id = a.request_id
         )
@@ -279,7 +313,7 @@ def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[di
     ).fetchall()
 
     open_schedules = []
-    for request_id, share, is_real_world_test in assignments:
+    for request_id, share, trade_ids, is_real_world_test in assignments:
         schedule = read_requested_schedule(conn, request_id)
         # completely replaced by a newer request of the buyer
         if schedule.empty:
@@ -296,6 +330,7 @@ def get_open_schedules(conn: sqlite3.Connection, seller_address: str) -> list[di
         open_schedules.append(
             {
                 "request_id": request_id,
+                "trade_ids": json.loads(trade_ids) if trade_ids else [],
                 "time_steps": schedule["time_steps"].tolist(),
                 "power_rate_w": (schedule["power_rate_w"] * share).tolist(),
             }
@@ -534,7 +569,7 @@ def validate_actual_schedule(
     requested_schedule = read_requested_schedule(conn, request_id)
     share = conn.execute(
         """
-        SELECT share FROM power_request_assignments
+        SELECT share, trade_ids FROM power_request_assignments
         WHERE request_id = ? AND seller_blockchain_address = ?
         """,
         (request_id, seller),
@@ -548,6 +583,12 @@ def validate_actual_schedule(
     elif share is None:
         errors.append(
             f"request_id {request_id!r} is not assigned to blockchain_address {seller!r}."
+        )
+    elif {str(t) for t in payload.trade_ids} != set(json.loads(share[1] or "[]")):
+        errors.append(
+            f"trade_ids do not match the trades request_id {request_id!r} was "
+            f"assigned to blockchain_address {seller!r} from: expected "
+            f"{json.loads(share[1] or '[]')}, got {[str(t) for t in payload.trade_ids]}."
         )
     elif (
         actual_schedule["time_steps"].tolist()

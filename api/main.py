@@ -141,21 +141,18 @@ def power_request(
 
     conn = sqlite3.connect(DB_PATH)
     try:
-        # only buyers that were awarded storage for this period may send a schedule
-        seller_shares, market_periods = util.find_seller_shares(
-            conn, payload.blockchain_address, time_steps
-        )
-        if not seller_shares:
-            logger.warning(
-                "Rejected power request: no awarded storage for blockchain_address=%s",
+        # only schedules made of the buyer's own trades for this period are accepted
+        try:
+            seller_shares, seller_trades, market_periods = util.find_seller_shares(
+                conn,
                 payload.blockchain_address,
+                time_steps,
+                [str(trade_id) for trade_id in payload.trade_ids],
             )
+        except ValueError as exc:
+            logger.warning("Rejected power request: %s", exc)
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"No awarded storage for blockchain_address "
-                    f"{payload.blockchain_address!r} in the period of the schedule."
-                ),
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
             )
 
         util.write_requested_aggregated_schedule_to_db(
@@ -163,6 +160,7 @@ def power_request(
             database_df,
             payload.blockchain_address,
             seller_shares,
+            seller_trades,
             market_periods,
             is_real_world_test,
         )

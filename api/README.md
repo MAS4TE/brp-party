@@ -57,7 +57,7 @@ Interactive API docs: `http://localhost:8000/docs`
 ## Endpoint: `POST /power_request`
 
 - **Authentication:** HTTP Basic Auth (username is ignored; password must match `POWER_REQUEST_PASSWORD`).
-- **Body:** the buyer's `blockchain_address`, 1–4 optional series (`eeg`, `wholesale`,
+- **Body:** the buyer's `blockchain_address`, the `trade_ids` the schedule is made up of, 1–4 optional series (`eeg`, `wholesale`,
   `community`, `home`) plus `time_steps`.
 - **Query parameter:** `is_real_world_test` (boolean, default `false`). When `true`, additional checks apply (see below).
 - **Response:** `200 OK` with the `request_id` assigned to this request.
@@ -67,6 +67,10 @@ Interactive API docs: `http://localhost:8000/docs`
 ```json
 {
   "blockchain_address": "0x...",
+  "trade_ids": [
+    "0b6f5c1e-8a4d-4e7b-9f3a-2c1d5e6a7b80",
+    "7d2e9a14-3b5c-4f60-8a1e-9c4b2d7f1a35"
+  ],
   "time_steps": [
     "2026-05-08T12:00:00",
     "2026-05-08T12:15:00"
@@ -112,12 +116,18 @@ request with the schedule that was actually driven.
 
 The schedule is assigned from the market results stored by `POST /market_results`:
 
-- The buyer needs an accepted order (`blockchain_address` = the buyer's, negative
+- `trade_ids` lists the trades of the buyer the schedule is made up of (the `trade_id`s in
+  the `matches` of its market result). The buyer does not need to know the sellers, and a
+  schedule may span several trades, also with the same seller. At least one is required, no
+  duplicates. A trade may be used by several requests, e.g. for different parts of its
+  delivery period.
+- Each trade must be a trade of the buyer (`blockchain_address` = the buyer's, negative
   `accepted_volume`) whose delivery period covers the whole schedule, i.e. `start_time` ≤ first
   `time_step` and last `time_step` + 15 min ≤ `end_time`. Otherwise the request is rejected
-  with `422` and nothing is stored.
-- Every seller in the `matches` of these orders gets a share of the schedule proportional
-  to its matched volume (e.g. 0.5 and 1.5 matched → 25 % and 75 %).
+  with `422` naming the offending trades, and nothing is stored.
+- Every seller of these trades gets a share of the schedule proportional to the matched
+  volume of **these** trades (e.g. 1 kWh and 3 kWh → 25 % and 75 %). Other trades of the
+  buyer are not considered.
 
 ### Replacing an earlier request
 
@@ -136,7 +146,7 @@ On success, each timestep is stored as one row in the table `requested_aggregate
 in the database at `DB_PATH` (long table: `request_id`, `time_steps`, `power_rate_w`,
 `requested_at` — UTC timestamp shared by all rows of the request, `blockchain_address` of
 the buyer, `is_real_world_test`). Each assigned seller gets one row in
-`power_request_assignments` (`request_id`, `seller_blockchain_address`, `share`), and each
+`power_request_assignments` (`request_id`, `seller_blockchain_address`, `share`, `trade_ids` as JSON list), and each
 market period the assignment is based on one row in `power_request_market_periods`
 (`request_id`, `market_id`, `start_time`). All are written in one transaction; if it fails,
 nothing is stored.
@@ -159,7 +169,7 @@ lexicographically also sorts them chronologically.
 | Status | When |
 | ------ | ---- |
 | `401` | Invalid HTTP Basic password |
-| `422` | Validation failed (body or `is_real_world_test` rules), or no awarded storage for the buyer in the period of the schedule |
+| `422` | Validation failed (body or `is_real_world_test` rules), or `trade_ids` unknown, not trades of the buyer, or not covering the period of the schedule |
 | `500` | `POWER_REQUEST_PASSWORD` not configured, or SQLite read/persist failed |
 
 ## Example: build a request with pandas
@@ -181,6 +191,7 @@ df = pd.DataFrame(
 
 payload = {
     "blockchain_address": "0x...",
+    "trade_ids": ["0b6f5c1e-8a4d-4e7b-9f3a-2c1d5e6a7b80"],
     "time_steps": [ts.isoformat() for ts in df.index],
     **{col: df[col].tolist() for col in df.columns},
 }
@@ -232,12 +243,15 @@ Polled by the sellers (e.g. every 30 s) to learn which schedules they have to fu
   the past on purpose and stay in the list until they are reported or their market period
   is cleared again (see `POST /market_results`).
 
-`power_rate_w` is the seller's share of the requested power (W):
+`trade_ids` are the seller's trades this schedule was assigned from; the seller has to
+send exactly these back to `POST /actual_schedule`. `power_rate_w` is the seller's share
+of the requested power (W):
 
 ```json
 [
   {
     "request_id": "200312c0-cb21-479d-82ec-037077f0bc44",
+    "trade_ids": ["0b6f5c1e-8a4d-4e7b-9f3a-2c1d5e6a7b80"],
     "time_steps": ["2026-05-08T12:00:00", "2026-05-08T12:15:00"],
     "power_rate_w": [5.0, 245.0]
   }
@@ -262,7 +276,7 @@ actually driven schedule against the seller's share of the original request (mat
 result synchronously.
 
 - **Authentication:** HTTP Basic Auth (username is ignored; password must match `POWER_REQUEST_PASSWORD`).
-- **Body:** `request_id`, the seller's `blockchain_address`, `time_steps`, and `power_rate_w` (equal lengths).
+- **Body:** `request_id`, the seller's `blockchain_address`, `trade_ids`, `time_steps`, and `power_rate_w` (equal lengths).
 - **Response:** `200 OK` with the validation result as JSON.
 
 ### Request body schema
@@ -271,12 +285,14 @@ result synchronously.
 {
   "request_id": "200312c0-cb21-479d-82ec-037077f0bc44",
   "blockchain_address": "0x...",
+  "trade_ids": ["0b6f5c1e-8a4d-4e7b-9f3a-2c1d5e6a7b80"],
   "time_steps": ["2026-05-08 12:00:00", "2026-05-08 12:15:00"],
   "power_rate_w": [5.0, 245.0]
 }
 ```
 
-`request_id` must be one handed out to this seller by `GET /power_request`, and
+`request_id` must be one handed out to this seller by `GET /power_request`, `trade_ids`
+must be exactly the set of trades handed out with it (otherwise `valid: false`), and
 `time_steps` must denote the same instants as the stored ones.
 
 The comparison is made on the canonical form described above, not on the raw text, so any
@@ -298,7 +314,7 @@ On success:
 ```
 
 On business-validation failure (unknown `request_id`, request not assigned to this seller,
-`time_steps` mismatch) — still `200 OK`:
+`trade_ids` mismatch, `time_steps` mismatch) — still `200 OK`:
 
 ```json
 {
@@ -319,7 +335,7 @@ outcome:
 
 - **Valid** (`time_steps` match the stored request): one row per timestep, with
   `time_steps`, `power_rate_w` (actual), and the per-timestep `missing_energy_wh`.
-- **Invalid** (unknown `request_id`, not assigned to this seller, `time_steps` mismatch): a single summary row with
+- **Invalid** (unknown `request_id`, not assigned to this seller, `trade_ids` mismatch, `time_steps` mismatch): a single summary row with
   `time_steps`/`power_rate_w`/`missing_energy_wh` set to `NULL` and `validation_errors` filled in.
 
 All rows have `request_id`, `blockchain_address` of the seller, `received_at` (UTC timestamp
@@ -331,7 +347,7 @@ of this submission), and `valid`.
 | ------ | ---- |
 | `401` | Invalid HTTP Basic password |
 | `422` | Body does not match the schema (e.g. `power_rate_w`/`time_steps` length mismatch) |
-| `200` with `valid: false` | Unknown `request_id`, not assigned to this seller, `time_steps` mismatch, or an unparseable timestamp |
+| `200` with `valid: false` | Unknown `request_id`, not assigned to this seller, `trade_ids` mismatch, `time_steps` mismatch, or an unparseable timestamp |
 | `500` | SQLite read/persist failed |
 
 ### curl example
